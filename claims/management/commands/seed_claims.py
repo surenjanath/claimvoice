@@ -163,7 +163,9 @@ class Command(BaseCommand):
                 if index > 2
                 else (ClaimStatus.DISPATCHED if tow else ClaimStatus.NEW),
                 source="seed",
-                created_at=now - timedelta(minutes=7 * index + random.randint(0, 5)),
+                # Well outside the webhook's duplicate window, so a live demo
+                # call is never mistaken for a repeat of a fixture.
+                created_at=now - timedelta(minutes=35 + 17 * index + random.randint(0, 6)),
             )
             # Most calls verify; leaving one that did not shows the dispatcher
             # what an unverified claim looks like on the board.

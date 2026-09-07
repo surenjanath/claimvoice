@@ -249,6 +249,25 @@ class WebhookTests(TestCase):
         # Same claim, same tow ETA: the caller is told one arrival time.
         self.assertEqual(second["message"], first["message"])
 
+    def test_a_seeded_fixture_does_not_swallow_a_real_claim(self):
+        payload = {
+            "policy_number": "PV482193",
+            "incident_type": "collision",
+            "location": "I-95 northbound",
+            "is_drivable": False,
+        }
+        Claim.objects.create(
+            policy_number="PV482193",
+            incident_type="collision",
+            location="Somewhere else",
+            is_drivable=True,
+            source="seed",
+        )
+        body = self.post(payload).json()
+        self.assertNotIn("duplicate", body)
+        self.assertEqual(Claim.objects.exclude(source="seed").count(), 1)
+        self.assertEqual(body["claim"]["location"], "I-95 northbound")
+
     def test_a_different_incident_on_the_same_policy_is_a_new_claim(self):
         base = {
             "policy_number": "PV482193",

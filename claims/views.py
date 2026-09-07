@@ -357,6 +357,10 @@ def log_claim(request):
             incident_type=fields["incident_type"],
             created_at__gte=timezone.now() - DUPLICATE_WINDOW,
         )
+        # Demo fixtures are not filings. Without this, seeding the board and
+        # then making a call means the caller is read back a reference from a
+        # claim that was never theirs, and no claim is filed at all.
+        .exclude(source="seed")
         .order_by("-created_at")
         .first()
     )
