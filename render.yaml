@@ -1,6 +1,11 @@
-# One-click deploy. Render prompts only for ASSEMBLYAI_API_KEY — everything
-# else is generated or derived, including the public URL the agent's webhooks
-# point at, which Render provides as RENDER_EXTERNAL_HOSTNAME.
+# One-click deploy. Render prompts only for ASSEMBLYAI_API_KEY; everything else
+# is generated or derived.
+#
+# Note on the free plan: preDeployCommand is a paid feature, so migrations and
+# seeding run in the build command instead. That runs on every deploy and has
+# the database env vars, which is what matters. Publishing the agent is left to
+# the /settings/ page, because the service's own hostname is only knowable at
+# runtime.
 databases:
   - name: claimvoice-db
     plan: free
@@ -12,14 +17,11 @@ services:
     name: claimvoice
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
-    # Runs before traffic is switched over, on every deploy. Migrating, seeding
-    # the policy book and publishing the agent are all idempotent, so a redeploy
-    # updates the same agent rather than piling up new ones.
-    preDeployCommand: >-
+    buildCommand: >-
+      pip install -r requirements.txt &&
+      python manage.py collectstatic --noinput &&
       python manage.py migrate --noinput &&
-      python manage.py seed_policies &&
-      python manage.py publish_agent
+      python manage.py seed_policies
     startCommand: gunicorn claimvoice.wsgi --bind 0.0.0.0:$PORT --workers 2 --timeout 60
     healthCheckPath: /healthz/
     envVars:

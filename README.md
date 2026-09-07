@@ -286,9 +286,33 @@ Two things worth knowing:
 
 ## Deploying
 
-`render.yaml` is a one-click blueprint; `Procfile` covers Railway and Heroku.
-Set `ASSEMBLYAI_API_KEY`, and after the first deploy set `PUBLIC_BASE_URL` to
-the service origin and run `publish_agent` so the webhook points at production
-rather than a tunnel. SQLite by default, Postgres when `DATABASE_URL` is set.
+`render.yaml` is a one-click blueprint — a free web service plus a free Postgres.
+Render prompts for `ASSEMBLYAI_API_KEY` and generates the rest, including a
+webhook secret the published tools then carry.
+
+1. Push the repo, then **New > Blueprint** on Render and point it at the repo.
+2. Paste your AssemblyAI key when prompted.
+3. When it is live, open `/settings/` and press **Save & publish**. The public
+   base URL is already filled in from the service's own hostname, and publishing
+   points both tool webhooks at production.
+
+Migrations and the policy seed run in the build command rather than a
+`preDeployCommand`, because pre-deploy commands are a paid feature and would be
+skipped in silence on the free plan.
+
+`Procfile` covers Railway and Heroku. SQLite by default, Postgres when
+`DATABASE_URL` is set.
+
+### The free plan and phone calls
+
+A free Render service sleeps after about fifteen minutes idle and takes roughly
+fifty seconds to wake. That is survivable in a browser — you press Start and
+wait — but it breaks a phone call: the tool webhook times out while the caller
+listens to nothing, and the claim is never filed.
+
+If a phone number needs to answer reliably, either move the web service to a
+paid instance, or keep the free one awake by pinging `/healthz/` every ten
+minutes from an external scheduler. The health check is cheap and touches only
+the database.
 
 Anyone with the URL can start sessions billed to your API key.

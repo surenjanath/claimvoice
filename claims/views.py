@@ -534,6 +534,12 @@ def agent_settings(request):
                 return redirect(reverse("settings"))
     else:
         form = AgentProfileForm(instance=profile)
+        # Nothing configured and nothing derived: offer the address this page
+        # was reached on, which on a hosted deploy is exactly right.
+        if not profile.public_base_url:
+            form.initial["public_base_url"] = (
+                f"{request.scheme}://{request.get_host()}"
+            )
 
     return render(
         request,

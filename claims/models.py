@@ -195,10 +195,18 @@ class AgentProfile(models.Model):
     @classmethod
     def load(cls):
         """The single profile row, seeded from agent.json the first time."""
+        from django.conf import settings as django_settings
+
         profile = cls.objects.first()
-        if profile:
-            return profile
-        return cls.seed()
+        if not profile:
+            return cls.seed()
+        # A fresh deploy knows its own hostname only at runtime, so adopt it
+        # rather than making someone paste it in. An address already chosen by
+        # hand is left alone.
+        if not profile.public_base_url and django_settings.PUBLIC_BASE_URL:
+            profile.public_base_url = django_settings.PUBLIC_BASE_URL
+            profile.save(update_fields=["public_base_url"])
+        return profile
 
     @classmethod
     def seed(cls, profile=None):
