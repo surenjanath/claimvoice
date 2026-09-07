@@ -224,6 +224,17 @@ class Command(BaseCommand):
                 account = twilio(f"https://api.twilio.com/2010-04-01/Accounts/{sid}.json")
                 line(True, f"Signed in as \"{account.get('friendly_name', sid)}\"",
                      f"status: {account.get('status', 'unknown')}")
+                # A trial account can hold a trunk but will only accept inbound
+                # calls from caller IDs it has verified, so a number nobody else
+                # can dial looks identical to a broken deployment.
+                if str(account.get("type", "")).lower() == "trial":
+                    self.stdout.write(
+                        self.style.WARNING(
+                            "  warn  This is a trial account. Inbound calls are refused\n"
+                            "        unless the caller's number is verified on the account,\n"
+                            "        so nobody else can ring this number until you upgrade."
+                        )
+                    )
             except CommandError as exc:
                 ok = line(False, "Credentials rejected by Twilio", str(exc)[:160])
 
