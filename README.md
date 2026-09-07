@@ -13,7 +13,8 @@ One Django app serves all three pieces:
 | | |
 | --- | --- |
 | `/` | The voice client. Microphone in, Ivy out, live transcript, and the caller's identity and claim filling in as she works. |
-| `/dashboard/` | The dispatcher board. Claims and risk on one tab, every call transcript on the other. |
+| `/dashboard/` | The dispatcher board. Claims and risk on one tab, every call — transcript and audio — on the other. |
+| `/insights/` | How the agent is doing, and which question it keeps getting wrong. |
 | `/directory/` | The policy book Ivy verifies against — pick a person and call in as them. |
 | `/settings/` | Ivy's voice, prompt and turn taking, published to AssemblyAI without a redeploy. |
 | `/api/verify/` · `/api/log-claim/` | The two tool webhooks AssemblyAI posts to. |
@@ -94,22 +95,75 @@ lapsed policy, or no roadside cover — as instructions rather than as facts she
 might read aloud. A tow on a policy without roadside cover is quoted as
 chargeable instead of dispatched free.
 
-## Every call, kept
+## Every call, kept — including the audio
 
-The Conversations tab on the dashboard holds the full transcript of each call,
-turn by turn with timings, the tool calls inline, and which identity checks
-passed. That is the corpus for tuning the prompt: the failures are visible, so
-you can see exactly which question Ivy asked badly.
+The Conversations tab holds each call in full: the recording, the transcript turn
+by turn with timings, the tool calls inline, and which identity checks passed.
+Click any line of the transcript and the audio jumps to that moment; the line
+playing highlights itself as it goes.
 
-AssemblyAI keeps session metadata but not the words, so the transcript comes from
-whatever held the call. The browser page posts turns as they happen; the
-simulator does the same. A phone call has no browser, so its record is built from
-its tool calls, and `manage.py sync_calls` tops it up with duration and close
-reason from the sessions API.
+The recording is a single stereo WAV with **the caller on the left channel and
+Ivy on the right**, which is what makes it useful rather than merely present: a
+barge-in, a talk-over, a pause that ran too long — all obvious when the two sides
+are separated, all muddy in a mix.
 
-Tool webhooks arrive from AssemblyAI with no session id, so they land on a row of
-their own; when the transcript arrives it absorbs any tool-call row from the same
-window, and the dispatcher sees one call rather than two halves.
+Building it is not just "save the audio", because the two directions do not
+arrive on the same clock. The microphone is real time, so its sample count *is*
+the clock. Ivy's audio arrives faster than it plays — the API sends a whole reply
+in a burst — so appending it in arrival order would drift further ahead with every
+turn. Each reply is instead anchored to the caller's clock when it starts, and on
+a barge-in the channel is truncated to where playback actually stopped, because
+the caller never heard the rest.
+
+The agent side is recorded from the API's own 24 kHz frames rather than from the
+speaker, since a browser may quietly refuse to open an `AudioContext` at the rate
+it was asked for and hand back 48 kHz instead.
+
+AssemblyAI keeps session metadata but not the words, so transcripts come from
+whatever held the call: the browser page and the simulator both post turns as
+they happen. A phone call has no browser, so its record is built from its tool
+calls, and `manage.py sync_calls` tops it up with duration and close reason from
+the sessions API.
+
+### Which call does a webhook belong to?
+
+AssemblyAI posts the tool webhooks itself and passes no session id, so the
+webhook cannot name its own call. It finds it by looking for the call that is
+**currently open** — clients register a session the moment it is ready and mark it
+ended when they hang up, so an unended row started minutes ago is the call being
+spoken on right now.
+
+The obvious alternative — match the most recent row that has no session id —
+looks right and is not. A leftover row from an earlier call stays "recent" long
+after that call ended, so claims filed later were silently glued onto it. That is
+exactly what happened here: a claim landed on a row from eighteen minutes earlier,
+and the call that actually filed it showed no claim at all. Two tests pin the
+behaviour down.
+
+## Insights
+
+`/insights/` is the other half of the dashboard: not what is happening, but how
+the agent is doing.
+
+- **Where calls end up** — answered, verified, filed, tow dispatched. Each stage a
+  subset of the one above it.
+- **Where Ivy needed a second attempt** — every time the claim webhook refused a
+  filing and sent her back to ask. The tallest bar is the question she skips most,
+  which is the one to fix in the prompt.
+- Risk bands, incident mix, how calls arrived, identity pass rate.
+
+**Export JSONL** hands you the whole call log — transcript, tool calls and outcome
+per line — shaped for an eval set or a fine-tune rather than a spreadsheet.
+
+The charts are labelled horizontal bars because every question on that page is a
+magnitude comparison with long category names. Values are direct-labelled on every
+row, so the charts double as their own table and nothing is carried by colour
+alone. Ordered scales (funnel stages, risk bands) use a single-hue ordinal ramp;
+the categorical charts use three fixed hues. Both palettes were checked with a
+validator against this app's actual dark surface rather than eyeballed — the risk
+colours the tables use for tags failed the normal-vision separation floor as
+chart fills (red and orange sit ΔE 10.6 apart, under the 15 floor), which is
+another reason risk is drawn as one ramp rather than four status hues.
 
 ## Putting Ivy on a real phone number
 
@@ -157,7 +211,7 @@ python manage.py publish_agent --from-file      # discard the saved profile, use
 python manage.py publish_agent --dry-run        # print what would be published
 python manage.py seed_policies                  # the book of policyholders
 python manage.py seed_claims --count 12 --clear # claims, each with the call it came from
-python manage.py sync_calls                     # pull session metadata for phone calls
+python manage.py sync_calls [--prune]           # pull session metadata; --prune drops empty call rows
 python manage.py connect_phone [--detach]       # attach the agent to a Twilio number
 python manage.py test
 ```

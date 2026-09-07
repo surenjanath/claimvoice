@@ -1,0 +1,76 @@
+{% extends "claims/base.html" %}
+{% load static %}
+
+{% block title %}Insights · ClaimVoice{% endblock %}
+{% block nav_insights %}on{% endblock %}
+
+{% block main %}
+<div class="board insights">
+  <div class="board-head">
+    <div>
+      <h1>Insights</h1>
+      <p>How the agent is doing, and which question it keeps getting wrong.</p>
+    </div>
+    <div class="right">
+      <div class="range" id="range">
+        <button class="chip" data-days="1">24h</button>
+        <button class="chip" data-days="7">7d</button>
+        <button class="chip on" data-days="30">30d</button>
+        <button class="chip" data-days="365">All</button>
+      </div>
+      <a class="btn small" href="{% url 'export-calls' %}" download>Export JSONL</a>
+    </div>
+  </div>
+
+  <div class="stats" id="kpis">
+    <div class="card stat"><div class="k mono">Calls answered</div><div class="v" id="kpi-calls">—</div></div>
+    <div class="card stat"><div class="k mono">Identity verified</div><div class="v" id="kpi-verified">—</div><div class="sub" id="kpi-verified-sub"></div></div>
+    <div class="card stat"><div class="k mono">Ended in a claim</div><div class="v" id="kpi-complete">—</div><div class="sub" id="kpi-complete-sub"></div></div>
+    <div class="card stat"><div class="k mono">Median call</div><div class="v" id="kpi-median">—</div></div>
+  </div>
+
+  <div class="chart-grid">
+    <section class="card panel">
+      <h2>Where calls end up</h2>
+      <p class="panel-note">Each stage is a subset of the one above it.</p>
+      <div class="bars" id="funnel"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>Claims by risk band</h2>
+      <p class="panel-note">Scored on ingest, before any human looks at them.</p>
+      <div class="bars" id="risk"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>What people are calling about</h2>
+      <p class="panel-note">The category Ivy chose from what the caller described.</p>
+      <div class="bars" id="incidents"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>How calls arrived</h2>
+      <p class="panel-note">Phone calls carry no transcript — only tool calls.</p>
+      <div class="bars" id="channels"></div>
+    </section>
+  </div>
+
+  <section class="card panel wide">
+    <h2>Where Ivy needed a second attempt</h2>
+    <p class="panel-note">
+      Every time the claim webhook refused a filing and sent the agent back to ask.
+      This is the list to fix in the prompt — the tallest bar is the question it
+      skips most.
+    </p>
+    <div class="bars" id="rejections"></div>
+    <div class="quality-row" id="quality"></div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.CLAIMVOICE = { metricsUrl: "{% url 'metrics' %}" };
+</script>
+<script src="{% static 'claims/js/insights.js' %}"></script>
+{% endblock %}

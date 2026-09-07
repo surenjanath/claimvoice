@@ -31,6 +31,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--limit", type=int, default=50)
+        parser.add_argument(
+            "--prune",
+            action="store_true",
+            help="Delete sessionless call rows that never gathered anything.",
+        )
 
     def handle(self, *args, **options):
         profile = AgentProfile.load()
@@ -79,3 +84,15 @@ class Command(BaseCommand):
                 f"{len(sessions)} sessions · {created} new call records · {updated} topped up"
             )
         )
+
+        if options["prune"]:
+            # A call with no words, no tools, no claim and no audio holds
+            # nothing a dispatcher could act on. Most are sessions this command
+            # itself created for calls that connected and went nowhere.
+            removed = 0
+            for conversation in Conversation.objects.filter(claims__isnull=True):
+                if conversation.turns or conversation.tool_calls or conversation.recording:
+                    continue
+                conversation.delete()
+                removed += 1
+            self.stdout.write(f"Pruned {removed} empty call records")

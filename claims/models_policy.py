@@ -6,6 +6,7 @@ call for tuning the prompt later.
 """
 
 from django.db import models
+from django.urls import reverse
 from django.utils import timezone
 
 
@@ -174,6 +175,11 @@ class Conversation(models.Model):
     turns = models.JSONField(default=list, blank=True)
     tool_calls = models.JSONField(default=list, blank=True)
 
+    # The audio of the call, uploaded by whoever held it. Stereo: the caller on
+    # the left, Ivy on the right, so you can hear who talked over whom.
+    recording = models.FileField(upload_to="recordings/", blank=True, null=True)
+    recording_bytes = models.PositiveIntegerField(default=0)
+
     started_at = models.DateTimeField(default=timezone.now, db_index=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     duration_seconds = models.FloatField(default=0)
@@ -215,6 +221,10 @@ class Conversation(models.Model):
             "duration_seconds": round(self.duration_seconds, 1),
             "close_reason": self.close_reason,
             "turn_count": len(self.turns or []),
+            "recording_url": (
+                reverse("conversation-recording", args=[self.id]) if self.recording else None
+            ),
+            "recording_bytes": self.recording_bytes,
             "tool_count": len(self.tool_calls or []),
             "summary": self.summary_line(),
             "claim_id": claim.id if claim else None,

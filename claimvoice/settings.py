@@ -111,6 +111,12 @@ TIME_ZONE = os.environ.get("TIME_ZONE", "UTC")
 USE_I18N = True
 USE_TZ = True
 
+# Call recordings. On a platform with an ephemeral disk (Render free) these
+# survive until the next deploy; point MEDIA_ROOT at a mounted disk or object
+# store to keep them.
+MEDIA_URL = "media/"
+MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "media"))
+
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
@@ -160,6 +166,10 @@ if not PUBLIC_BASE_URL:
             break
 # Optional shared secret required on the webhook when set.
 CLAIM_WEBHOOK_SECRET = os.environ.get("CLAIM_WEBHOOK_SECRET", "")
+
+# A recording is roughly 100 KB per second of call at 24 kHz stereo, so a long
+# call is a big upload. This caps it rather than letting one fill the disk.
+MAX_RECORDING_BYTES = int(os.environ.get("MAX_RECORDING_BYTES", 40 * 1024 * 1024))
 
 LOGGING = {
     "version": 1,

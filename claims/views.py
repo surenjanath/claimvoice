@@ -317,6 +317,20 @@ def log_claim(request):
     except PayloadError as exc:
         log.warning("Rejected tool call: %s", exc)
         ask = ASK_FOR.get(exc.field, "the missing detail")
+        # Kept on the call so the insights page can say which question the
+        # agent keeps skipping. This is the signal for tuning the prompt.
+        rejected_on = _conversation(
+            payload if isinstance(payload, dict) else {}, request
+        )
+        rejected_on.tool_calls = (rejected_on.tool_calls or []) + [
+            {
+                "name": "log_claim",
+                "rejected": True,
+                "missing": exc.field,
+                "arguments": unwrap(payload) if isinstance(payload, dict) else {},
+            }
+        ]
+        rejected_on.save(update_fields=["tool_calls"])
         return JsonResponse(
             {
                 "ok": False,

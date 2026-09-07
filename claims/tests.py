@@ -724,6 +724,59 @@ class ConversationTests(TestCase):
         self.assertEqual(conversation.policyholder.full_name, "Dana Whitfield")
         self.assertEqual(conversation.verifications.count(), 1)
 
+    def test_a_tool_call_joins_the_call_that_is_open(self):
+        """A webhook carries no session id, so it finds its call by that call
+        being the one still running."""
+        Policyholder.objects.create(
+            policy_number="PV482193", full_name="Dana Whitfield", phone="+15550142887"
+        )
+        # An earlier call, already hung up.
+        self.ingest(
+            session_id="sess_old",
+            turns=[{"role": "caller", "text": "Earlier call.", "at": 1.0}],
+            ended=True,
+            duration_seconds=60,
+        )
+        # The call happening now.
+        self.ingest(session_id="sess_live", turns=[])
+
+        self.client.post(
+            "/api/verify/",
+            data=json.dumps({"policy_number": "PV482193", "phone_last4": "2887"}),
+            content_type="application/json",
+        )
+        live = Conversation.objects.get(session_id="sess_live")
+        old = Conversation.objects.get(session_id="sess_old")
+        self.assertTrue(live.verified)
+        self.assertFalse(old.verified)
+        self.assertEqual(Conversation.objects.count(), 2)
+
+    def test_a_claim_lands_on_the_open_call_not_a_stale_row(self):
+        Policyholder.objects.create(
+            policy_number="PV482193", full_name="Dana Whitfield", phone="+15550142887"
+        )
+        self.ingest(
+            session_id="sess_yesterday",
+            turns=[],
+            ended=True,
+            duration_seconds=90,
+        )
+        self.ingest(session_id="sess_now", turns=[])
+        self.client.post(
+            "/api/log-claim/",
+            data=json.dumps(
+                {
+                    "policy_number": "PV482193",
+                    "incident_type": "collision",
+                    "location": "I-95",
+                    "is_drivable": "no",
+                }
+            ),
+            content_type="application/json",
+        )
+        claim = Claim.objects.get()
+        self.assertEqual(claim.conversation.session_id, "sess_now")
+
     def test_a_session_id_is_required(self):
         self.assertEqual(self.ingest(turns=[]).status_code, 400)
 

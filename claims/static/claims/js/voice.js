@@ -155,6 +155,7 @@
   // The call record. AssemblyAI keeps session metadata but not the words, so
   // the page is the only place the transcript exists — it posts it as it goes.
   let sessionId = null;
+  let recorder = null;
   const record = { turns: [], toolCalls: [] };
   let recordDirty = false;
   let recordTimer = null;
@@ -302,9 +303,14 @@
       ws = new WebSocket(url);
 
       // The API takes base64 inside JSON, not binary frames.
+      recorder = new window.CallRecorder(WIRE_RATE);
+
       capture.port.onmessage = ({ data }) => {
         if (data && data.level !== undefined) { micLevel = data.level; paintOrb(); return; }
         if (!ready || ws.readyState !== 1) return;
+        // Recorded before the socket check would drop it, so the recording is
+        // the call as it happened rather than as it was transmitted.
+        recorder.addCaller(new Int16Array(data));
         const bytes = new Uint8Array(data);
         let binary = '';
         for (let i = 0; i < bytes.length; i += 0x8000) {
@@ -334,7 +340,11 @@
       case 'session.ready':
         sessionId = msg.session_id || null;
         callStart = Date.now();
-        // Little and often, so the dispatcher sees the call while it runs.
+        // Registered immediately, then little and often: the webhook has no
+        // session id of its own and finds this call by it being the open one,
+        // so the row has to exist before Ivy can reach for a tool.
+        recordDirty = true;
+        pushRecord(false);
         recordTimer = setInterval(() => pushRecord(false), 4000);
         timer = setInterval(tick, 1000);
         tick();
@@ -348,13 +358,17 @@
         break;
 
       case 'input.speech.started':
-        // Barge-in: empty the ring buffer so Ivy stops mid-word.
+        // Barge-in: empty the ring buffer so Ivy stops mid-word, and cut the
+        // recording to match — the caller never heard the rest.
         playback && playback.port.postMessage('stop');
+        recorder && recorder.truncateAgent(recorder.position);
         setStatus('listening');
         logEvent('down', msg.type);
         break;
 
       case 'reply.started':
+        // Anchor this reply to now on the caller's clock.
+        recorder && recorder.alignAgent(recorder.position);
         setStatus('speaking');
         logEvent('down', msg.type);
         break;
@@ -363,6 +377,8 @@
         const raw = atob(msg.data);
         const bytes = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        // Record before the transfer: postMessage neuters the buffer.
+        recorder && recorder.addAgent(new Int16Array(bytes.buffer.slice(0)));
         playback && playback.port.postMessage(bytes.buffer, [bytes.buffer]);
         logEvent('down', msg.type);
         break;
@@ -370,7 +386,10 @@
 
       case 'reply.done':
         setStatus('listening');
-        if (msg.status === 'interrupted') playback && playback.port.postMessage('stop');
+        if (msg.status === 'interrupted') {
+          playback && playback.port.postMessage('stop');
+          recorder && recorder.truncateAgent(recorder.position);
+        }
         logEvent('down', msg.type, msg.status);
         break;
 
@@ -502,13 +521,18 @@
 
   // AssemblyAI posts the webhook, so the claim shows up in our database a beat
   // later. Poll briefly for the row rather than guessing what was written.
+  //
+  // Only rows filed since this call started count: a returning caller already
+  // has claims under that policy number, and one of those is not this one.
   function awaitClaim(policyNumber) {
     let tries = 0;
+    const after = (callStart || Date.now()) - 5000;
     const look = async () => {
       tries += 1;
       try {
         const res = await fetch(CFG.feedUrl);
-        const { claims } = await res.json();
+        const { claims: all } = await res.json();
+        const claims = all.filter((c) => new Date(c.created_at).getTime() >= after);
         const match = policyNumber
           ? claims.find((c) => c.policy_number === String(policyNumber).toUpperCase())
           : claims[0];
@@ -561,10 +585,29 @@
     setStatus('idle');
   }
 
+  async function finishRecording() {
+    if (!recorder || !sessionId) return;
+    const seconds = recorder.seconds;
+    if (seconds < 1) return;
+    const mine = recorder;
+    recorder = null;
+    addLine('system', `Uploading ${Math.round(seconds)}s of audio…`);
+    // The transcript post creates the call row this attaches to, so it goes
+    // first and this waits for it.
+    await pushRecord('client_end');
+    const result = await mine.upload(CFG.recordingUrl, sessionId);
+    addLine(
+      'system',
+      result
+        ? `Recording saved (${(result.bytes / 1048576).toFixed(1)} MB) — playable on the dispatcher board.`
+        : 'Recording could not be uploaded.'
+    );
+  }
+
   function reset() {
     clearInterval(timer);
     clearInterval(recordTimer);
-    pushRecord('client_end');
+    finishRecording();
     clearPartials();
     open.forEach((run) => paint(run, true));
     open.clear();

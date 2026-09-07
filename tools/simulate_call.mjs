@@ -73,6 +73,79 @@ const ORDER = ['safety', 'policy', 'last4', 'injuries', 'incident', 'location', 
 const work = mkdtempSync(join(tmpdir(), 'claimvoice-'))
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// The same stereo recording the browser page makes: caller left, Ivy right,
+// aligned on the caller's clock because the mic side runs in real time.
+class Recorder {
+  constructor(rate = WIRE_RATE) {
+    this.rate = rate
+    this.left = []
+    this.right = []
+    this.leftLen = 0
+    this.rightLen = 0
+  }
+  get position() {
+    return this.leftLen
+  }
+  addCaller(int16) {
+    this.left.push(int16)
+    this.leftLen += int16.length
+  }
+  addAgent(int16) {
+    this.right.push(int16)
+    this.rightLen += int16.length
+  }
+  alignAgent(position) {
+    if (position > this.rightLen) {
+      this.right.push(new Int16Array(position - this.rightLen))
+      this.rightLen = position
+    }
+  }
+  truncateAgent(position) {
+    // Dropping whole chunks is close enough: the point is that the tail the
+    // caller never heard does not end up in the recording.
+    while (this.rightLen > position && this.right.length) {
+      const last = this.right[this.right.length - 1]
+      if (this.rightLen - last.length < position) break
+      this.right.pop()
+      this.rightLen -= last.length
+    }
+  }
+  _flat(chunks, length) {
+    const out = new Int16Array(length)
+    let at = 0
+    for (const chunk of chunks) {
+      out.set(chunk, at)
+      at += chunk.length
+    }
+    return out
+  }
+  toWav() {
+    const frames = Math.max(this.leftLen, this.rightLen)
+    if (!frames) return null
+    const left = this._flat(this.left, this.leftLen)
+    const right = this._flat(this.right, this.rightLen)
+    const buffer = Buffer.alloc(44 + frames * 4)
+    buffer.write('RIFF', 0)
+    buffer.writeUInt32LE(36 + frames * 4, 4)
+    buffer.write('WAVE', 8)
+    buffer.write('fmt ', 12)
+    buffer.writeUInt32LE(16, 16)
+    buffer.writeUInt16LE(1, 20)
+    buffer.writeUInt16LE(2, 22)
+    buffer.writeUInt32LE(this.rate, 24)
+    buffer.writeUInt32LE(this.rate * 4, 28)
+    buffer.writeUInt16LE(4, 32)
+    buffer.writeUInt16LE(16, 34)
+    buffer.write('data', 36)
+    buffer.writeUInt32LE(frames * 4, 40)
+    for (let i = 0; i < frames; i++) {
+      buffer.writeInt16LE(i < this.leftLen ? left[i] : 0, 44 + i * 4)
+      buffer.writeInt16LE(i < this.rightLen ? right[i] : 0, 46 + i * 4)
+    }
+    return buffer
+  }
+}
+
 let clipIndex = 0
 const clips = new Map()
 
@@ -113,6 +186,8 @@ async function main() {
 
   const ws = new WebSocket(`wss://agents.assemblyai.com/v1/ws?token=${token}`)
   const started = Date.now()
+  // Anything filed before this instant belongs to an earlier call.
+  const callOpenedAt = new Date(started - 5000).toISOString()
   const at = () => ((Date.now() - started) / 1000).toFixed(1).padStart(5) + 's'
 
   // The caller's outgoing audio. The pump below drains it at real time speed
@@ -135,6 +210,9 @@ async function main() {
     while (ws.readyState === 1) {
       if (live) {
         const frame = queue.shift() || SILENCE
+        recorder.addCaller(
+          new Int16Array(frame.buffer, frame.byteOffset, frame.length / 2)
+        )
         ws.send(JSON.stringify({ type: 'input.audio', audio: frame.toString('base64') }))
       }
       await sleep(FRAME_MS)
@@ -180,10 +258,13 @@ async function main() {
   // The call record, posted the same way the browser page posts one, so a
   // simulated call shows up on the board with its transcript like any other.
   let assemblySessionId = null
+  const recorder = new Recorder()
   const turns = []
   const toolCalls = []
   const note = (role, text) =>
     turns.push({ role, text, at: Number(((Date.now() - started) / 1000).toFixed(1)) })
+
+  let recordTimer = null
 
   async function postRecord(ended) {
     if (!assemblySessionId) return
@@ -220,9 +301,27 @@ async function main() {
   ws.addEventListener('message', async ({ data }) => {
     const msg = JSON.parse(data)
     switch (msg.type) {
+      case 'reply.started':
+        recorder.alignAgent(recorder.position)
+        break
+
+      case 'reply.audio': {
+        const pcm = Buffer.from(msg.data, 'base64')
+        recorder.addAgent(new Int16Array(pcm.buffer, pcm.byteOffset, pcm.length / 2))
+        break
+      }
+
+      case 'input.speech.started':
+        recorder.truncateAgent(recorder.position)
+        break
+
       case 'session.ready':
         console.log(`${at()}  --    session ready`)
         assemblySessionId = msg.session_id || null
+        // Register the call before any tool can fire: the webhook identifies
+        // its call by finding the one that is currently open.
+        postRecord(false)
+        recordTimer = setInterval(() => postRecord(false), 5000)
         live = true
         pump()
         break
@@ -273,7 +372,7 @@ async function main() {
         note('tool', `${msg.name}(${JSON.stringify(shown)})`)
         if (msg.name !== 'log_claim') break
         sawToolCall = true
-        const landed = await waitForClaim(msg.arguments?.policy_number, 8)
+        const landed = await waitForClaim(msg.arguments?.policy_number, callOpenedAt, 8)
         if (landed) {
           filed = landed
           claimReference = `CV-${String(landed.id).padStart(5, '0')}`
@@ -306,7 +405,27 @@ async function main() {
 
   await done
   clearTimeout(guard)
+  clearInterval(recordTimer)
   await postRecord('client_end')
+
+  // The transcript post creates the row this attaches to, so it goes first.
+  const wav = recorder.toWav()
+  if (wav && assemblySessionId) {
+    const form = new FormData()
+    form.append('session_id', assemblySessionId)
+    form.append('audio', new Blob([wav], { type: 'audio/wav' }), 'call.wav')
+    try {
+      const res = await fetch(`${BASE}/api/recordings/upload/`, { method: 'POST', body: form })
+      const body = await res.json()
+      console.log(
+        res.ok
+          ? `        recording ${(body.bytes / 1048576).toFixed(1)} MB uploaded`
+          : `        recording rejected: ${body.error}`
+      )
+    } catch (error) {
+      console.log(`        recording upload failed: ${error.message}`)
+    }
+  }
   rmSync(work, { recursive: true, force: true })
 
   console.log('')
@@ -327,14 +446,21 @@ async function main() {
 
 // The webhook fires from AssemblyAI's side, so the row appears a beat after
 // the tool call. Poll our own API for it rather than assuming.
-async function waitForClaim(policyNumber, tries = 15) {
+//
+// `since` is what makes this correct: a caller who has claimed before already
+// has rows under that policy number, and matching one of those reports a claim
+// that was never filed — and, worse, ends the call while the agent is still
+// asking questions.
+async function waitForClaim(policyNumber, since, tries = 15) {
   const wanted = policyNumber ? String(policyNumber).toUpperCase().replace(/\s/g, '') : null
+  const after = new Date(since).getTime()
   for (let i = 0; i < tries; i++) {
     await sleep(1000)
     try {
       const res = await fetch(`${BASE}/api/claims/`)
       const { claims } = await res.json()
-      const match = wanted ? claims.find((c) => c.policy_number === wanted) : claims[0]
+      const fresh = claims.filter((c) => new Date(c.created_at).getTime() >= after)
+      const match = wanted ? fresh.find((c) => c.policy_number === wanted) : fresh[0]
       if (match) return match
     } catch {
       /* the call is still worth finishing */

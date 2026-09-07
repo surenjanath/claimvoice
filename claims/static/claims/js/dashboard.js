@@ -131,7 +131,10 @@
       </td>
       <td><span class="tag">${escape(conversation.channel_label)}</span></td>
       <td><div class="desc" style="max-width:52ch">${escape(conversation.summary) || '<span class="muted">no transcript</span>'}</div></td>
-      <td><span class="when">${escape(conversation.turn_count)} turns · ${escape(conversation.tool_count)} tools</span></td>
+      <td>
+        <span class="when">${escape(conversation.turn_count)} turns · ${escape(conversation.tool_count)} tools</span>
+        ${conversation.recording_url ? '<span class="tag audio">Audio</span>' : ''}
+      </td>
       <td>${conversation.claim_reference
         ? `<span class="ref">${escape(conversation.claim_reference)}</span>`
         : '<span class="muted">—</span>'}</td>
@@ -145,13 +148,23 @@
   // --- drawer ---------------------------------------------------------------
 
   function openDrawer(title) {
+    if (drawerAudio) {
+      drawerAudio.pause();
+      drawerAudio = null;
+    }
     $('drawer-title').textContent = title;
     $('drawer-body').replaceChildren();
     $('drawer').hidden = false;
     $('scrim').hidden = false;
   }
 
+  let drawerAudio = null;
+
   function closeDrawer() {
+    if (drawerAudio) {
+      drawerAudio.pause();
+      drawerAudio = null;
+    }
     $('drawer').hidden = true;
     $('scrim').hidden = true;
   }
@@ -243,10 +256,29 @@
         body.append(checks);
       }
 
+      // The player, and the transcript wired to it: every line carries the
+      // second it was said, so clicking one seeks there and the line that is
+      // currently playing highlights itself.
+      let audio = null;
+      if (call.recording_url) {
+        const player = document.createElement('div');
+        player.className = 'player';
+        player.innerHTML = `
+          <audio controls preload="metadata" src="${escape(call.recording_url)}"></audio>
+          <div class="player-note">
+            Caller on the left channel, Ivy on the right ·
+            ${(call.recording_bytes / 1048576).toFixed(1)} MB ·
+            <a href="${escape(call.recording_url)}" download>download</a>
+          </div>`;
+        body.append(player);
+        audio = player.querySelector('audio');
+      }
+
       const heading = document.createElement('div');
       heading.className = 'k mono';
       heading.style.margin = '22px 0 10px';
-      heading.textContent = `Transcript · ${(call.turns || []).length} turns`;
+      heading.textContent = `Transcript · ${(call.turns || []).length} turns` +
+        (audio ? ' · click a line to jump there' : '');
       body.append(heading);
 
       if (!(call.turns || []).length) {
@@ -258,18 +290,46 @@
       }
 
       const script = document.createElement('div');
-      script.className = 'script';
+      script.className = 'script' + (audio ? ' seekable' : '');
       script.innerHTML = (call.turns || [])
         .map(
-          (turn) => `
-            <div class="turn ${escape(turn.role)}">
-              <span class="at mono">${escape((turn.at ?? 0).toFixed ? turn.at.toFixed(1) : turn.at)}s</span>
+          (turn, index) => `
+            <div class="turn ${escape(turn.role)}" data-at="${Number(turn.at) || 0}" data-index="${index}">
+              <span class="at mono">${escape(Number(turn.at || 0).toFixed(1))}s</span>
               <span class="role mono">${escape(turn.role === 'agent' ? 'Ivy' : turn.role)}</span>
               <span class="said">${escape(turn.text)}</span>
             </div>`
         )
         .join('');
       body.append(script);
+
+      if (audio) {
+        const lines = [...script.querySelectorAll('.turn')];
+        lines.forEach((line) => {
+          line.onclick = () => {
+            // A turn is stamped when it was finalised, which is a beat after
+            // it started being said. Rewind slightly so the line is not
+            // already half over when playback begins.
+            audio.currentTime = Math.max(0, Number(line.dataset.at) - 1.5);
+            audio.play();
+          };
+        });
+        let lit = null;
+        audio.addEventListener('timeupdate', () => {
+          const now = audio.currentTime + 1.5;
+          let current = null;
+          for (const line of lines) {
+            if (Number(line.dataset.at) <= now) current = line;
+            else break;
+          }
+          if (current === lit) return;
+          if (lit) lit.classList.remove('playing');
+          if (current) current.classList.add('playing');
+          lit = current;
+        });
+        // Leaving the drawer must not leave audio playing behind it.
+        drawerAudio = audio;
+      }
 
       if ((call.tool_calls || []).length) {
         const tools = document.createElement('div');

@@ -107,8 +107,10 @@
     agentUrl: "{% url 'agent' %}",
     feedUrl: "{% url 'claim-feed' %}",
     conversationUrl: "{% url 'conversation-ingest' %}",
-    sessionUrl: "{% url 'conversation-session' %}"
+    sessionUrl: "{% url 'conversation-session' %}",
+    recordingUrl: "{% url 'recording-upload' %}"
   };
 </script>
+<script src="{% static 'claims/js/recorder.js' %}"></script>
 <script src="{% static 'claims/js/voice.js' %}"></script>
 {% endblock %}

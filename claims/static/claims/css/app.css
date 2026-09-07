@@ -584,3 +584,70 @@ select {
   .tabs-row { flex-wrap: wrap; }
   .tabs-row input[type=search] { margin-left: 0; width: 100%; }
 }
+
+/* --- call recording player ----------------------------------------------- */
+
+.player { margin: 20px 0 6px; }
+.player audio { width: 100%; height: 36px; }
+.player-note { margin-top: 8px; color: var(--faint); font-size: 11.5px; line-height: 1.6; }
+.player-note a { color: var(--accent); }
+.tag.audio { color: var(--accent); border-color: rgba(99, 102, 241, .4); background: var(--accent-soft); }
+
+.script.seekable .turn { cursor: pointer; border-radius: 6px; padding: 3px 6px; margin: 0 -6px; }
+.script.seekable .turn:hover { background: var(--surface-2); }
+.turn.playing { background: var(--accent-soft); }
+.turn.playing .said { color: var(--text); }
+
+/* --- insights ------------------------------------------------------------ */
+
+.insights .stat .sub { margin-top: 4px; color: var(--faint); font-size: 11.5px; }
+.range { display: flex; gap: 4px; }
+.range .chip { padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line);
+               color: var(--muted); font-size: 12.5px; transition: all .15s; }
+.range .chip:hover { color: var(--text); border-color: var(--line-strong); }
+.range .chip.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+
+.chart-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px; margin-top: 22px;
+}
+.panel { padding: 22px 24px; }
+.panel h2 { font-size: 15px; font-weight: 400; letter-spacing: -.01em; color: var(--text); }
+.panel-note { margin: 6px 0 18px; color: var(--faint); font-size: 12.5px; line-height: 1.6; max-width: 56ch; }
+.panel.wide { margin-top: 14px; }
+
+/* A labelled row per bar: the label and the value are always on screen, so the
+   chart is its own table and nothing is carried by colour alone. */
+.bars { display: flex; flex-direction: column; gap: 9px; }
+.bar-row {
+  display: grid; grid-template-columns: 168px 1fr 44px 44px;
+  align-items: center; gap: 12px;
+}
+.bar-label { color: var(--muted); font-size: 13px; }
+.bar-track { height: 10px; background: rgba(255, 255, 255, .05); border-radius: 3px; overflow: hidden; }
+.bar-fill {
+  display: block; height: 100%; border-radius: 0 3px 3px 0;
+  transition: width .35s ease-out; min-width: 2px;
+}
+.bar-value {
+  font-family: var(--mono); font-size: 13px; color: var(--text);
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.bar-share {
+  font-family: var(--mono); font-size: 11px; color: var(--faint);
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+
+.quality-row {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px;
+  margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line);
+}
+.quality-row > div { display: flex; flex-direction: column; gap: 5px; }
+.q-value { font-size: 22px; font-weight: 300; letter-spacing: -.03em; color: var(--text); }
+.q-label { color: var(--faint); font-size: 12px; line-height: 1.5; }
+
+@media (max-width: 900px) {
+  .chart-grid { grid-template-columns: 1fr; }
+  .quality-row { grid-template-columns: repeat(2, 1fr); }
+  .bar-row { grid-template-columns: 120px 1fr 40px 40px; }
+}

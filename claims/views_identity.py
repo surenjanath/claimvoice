@@ -10,7 +10,7 @@ import logging
 from datetime import timedelta
 
 from django.conf import settings
-from django.http import HttpResponseNotAllowed, JsonResponse
+from django.http import FileResponse, Http404, HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -30,12 +30,23 @@ def digits(value):
     return "".join(c for c in str(value or "") if c.isdigit())
 
 
+# A tool call belongs to a call that is happening right now, so this is how
+# long a call may plausibly still be running.
+LIVE_CALL_WINDOW = timedelta(minutes=15)
+
+
 def _conversation(payload, request, channel_default=Conversation.Channel.PHONE):
     """Find or start the call record this tool call belongs to.
 
-    AssemblyAI does not pass a session id to an HTTP tool, so a browser call is
-    matched by the id the page reports when it posts its transcript, and a
-    phone call falls back to the most recent open record for that number.
+    AssemblyAI posts its HTTP tools itself and passes no session id, so the
+    webhook cannot name its own call. What it can do is look for the call that
+    is currently open: clients register the session as soon as it is ready and
+    mark it ended when they hang up, so an unended row started minutes ago is
+    the call being spoken on right now.
+
+    Matching on "any recent row without a session id" instead is what went
+    wrong before — a leftover row from an earlier call is recent for a while
+    after that call has ended, and claims filed later were glued onto it.
     """
     session_id = payload.get("session_id") or request.headers.get("X-Session-Id", "")
     if session_id:
@@ -47,18 +58,19 @@ def _conversation(payload, request, channel_default=Conversation.Channel.PHONE):
             },
         )
         return conversation
-    # No session id: keep one open record per recent caller rather than
-    # scattering a call across rows.
-    recent = (
+
+    live = (
         Conversation.objects.filter(
-            session_id__isnull=True,
-            started_at__gte=timezone.now() - timedelta(minutes=20),
+            ended_at__isnull=True,
+            started_at__gte=timezone.now() - LIVE_CALL_WINDOW,
         )
         .order_by("-started_at")
         .first()
     )
-    if recent:
-        return recent
+    if live:
+        return live
+
+    # Nothing is open: a phone call, whose client never registers a session.
     return Conversation.objects.create(
         channel=channel_default, agent_id=settings.ASSEMBLYAI_AGENT_ID
     )
@@ -308,6 +320,74 @@ def conversation_feed(request):
     return JsonResponse(
         {"conversations": [c.as_dict() for c in queryset[:100]]}
     )
+
+
+@csrf_exempt
+def conversation_recording(request, pk):
+    """Store or serve the audio of a call.
+
+    POST is a multipart upload from whoever held the session — the browser page
+    and the simulator both mix the two directions into one stereo WAV, the
+    caller on the left and Ivy on the right. GET streams it back for the
+    dispatcher's player.
+    """
+    conversation = get_object_or_404(Conversation, pk=pk)
+
+    if request.method == "GET":
+        if not conversation.recording:
+            raise Http404("no recording")
+        return FileResponse(
+            conversation.recording.open("rb"),
+            content_type="audio/wav",
+            filename=f"claimvoice-call-{conversation.id}.wav",
+        )
+
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["GET", "POST"])
+
+    upload = request.FILES.get("audio")
+    if not upload:
+        return JsonResponse({"error": "no audio file"}, status=400)
+    if upload.size > settings.MAX_RECORDING_BYTES:
+        log.warning("Recording for %s rejected: %s bytes", conversation.id, upload.size)
+        return JsonResponse(
+            {"error": "recording too large", "limit": settings.MAX_RECORDING_BYTES},
+            status=413,
+        )
+
+    # A re-upload replaces the old file rather than leaving it orphaned.
+    if conversation.recording:
+        conversation.recording.delete(save=False)
+    conversation.recording.save(
+        f"call-{conversation.id}-{conversation.started_at:%Y%m%d-%H%M%S}.wav",
+        upload,
+        save=False,
+    )
+    conversation.recording_bytes = upload.size
+    conversation.save(update_fields=["recording", "recording_bytes"])
+    log.info("Recording stored for call %s (%s bytes)", conversation.id, upload.size)
+    return JsonResponse(
+        {
+            "ok": True,
+            "bytes": upload.size,
+            "url": conversation.as_dict()["recording_url"],
+        }
+    )
+
+
+@csrf_exempt
+def recording_by_session(request):
+    """Upload keyed on the AssemblyAI session id, which is what a client knows.
+
+    The client never learns our conversation id, so this resolves it.
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    session_id = (request.POST.get("session_id") or "").strip()
+    conversation = Conversation.objects.filter(session_id=session_id).first()
+    if not conversation:
+        return JsonResponse({"error": "unknown session"}, status=404)
+    return conversation_recording(request, conversation.pk)
 
 
 @require_GET
