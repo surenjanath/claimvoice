@@ -1,0 +1,122 @@
+{% extends "claims/base.html" %}
+
+{% block title %}Agent · ClaimVoice{% endblock %}
+{% block nav_settings %}on{% endblock %}
+
+{% block main %}
+<div class="board settings">
+  <div class="board-head">
+    <div>
+      <h1>Agent configuration</h1>
+      <p>Ivy's voice, prompt and turn taking. Publishing pushes it straight to AssemblyAI.</p>
+    </div>
+    <div class="right">
+      {% if profile.agent_id %}
+        <span class="pill"><span class="dot" style="color:var(--live)"></span>Published</span>
+      {% else %}
+        <span class="pill">Not published</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if not has_key %}
+    <div class="banner" style="margin-bottom:20px">
+      No <code>ASSEMBLYAI_API_KEY</code> in <code>.env</code>. Publishing will fail until you add one.
+    </div>
+  {% endif %}
+
+  <div class="share card">
+    <div>
+      <div class="k mono">Share this call link</div>
+      <div class="link-row">
+        <input type="text" id="share-link" readonly value="{{ profile.public_base_url|default:request.scheme|add:'://'|add:request.get_host }}/">
+        <button type="button" class="btn small" id="copy-link">Copy</button>
+      </div>
+      <p class="hint">
+        {% if profile.public_base_url %}
+          Anyone with this link can talk to Ivy. Sessions are billed to your API key.
+        {% else %}
+          Local only so far. Set a public base URL below and this becomes a link you can send.
+        {% endif %}
+      </p>
+    </div>
+    <div class="share-meta">
+      <div><span class="k mono">Agent ID</span><span class="v mono">{{ profile.agent_id|default:"—" }}</span></div>
+      <div><span class="k mono">Webhook</span><span class="v mono">{{ profile.webhook_url|default:"not set" }}</span></div>
+      <div><span class="k mono">Published</span><span class="v mono">{{ profile.published_at|default:"never" }}</span></div>
+    </div>
+  </div>
+
+  <form method="post" class="settings-form">
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="banner">{{ form.non_field_errors }}</div>{% endif %}
+
+    <section class="card block">
+      <h2>Identity</h2>
+      {% include "claims/_field.html" with field=form.name %}
+      {% include "claims/_field.html" with field=form.voice_id %}
+      {% include "claims/_field.html" with field=form.greeting %}
+    </section>
+
+    <section class="card block">
+      <h2>Prompt</h2>
+      {% include "claims/_field.html" with field=form.system_prompt %}
+    </section>
+
+    <section class="card block">
+      <h2>Listening</h2>
+      <div class="grid-2">
+        {% include "claims/_field.html" with field=form.vad_threshold %}
+        {% include "claims/_field.html" with field=form.volume %}
+        {% include "claims/_field.html" with field=form.min_silence %}
+        {% include "claims/_field.html" with field=form.max_silence %}
+      </div>
+      {% include "claims/_field.html" with field=form.interrupt_response %}
+      {% include "claims/_field.html" with field=form.keyterms_text %}
+    </section>
+
+    <section class="card block">
+      <h2>Claim tool</h2>
+      {% include "claims/_field.html" with field=form.public_base_url %}
+      <div class="grid-2">
+        {% include "claims/_field.html" with field=form.execution_mode %}
+        {% include "claims/_field.html" with field=form.timeout_seconds %}
+      </div>
+      <p class="hint">
+        The <code>log_claim</code> schema itself lives in <code>agent.json</code> — it is the
+        contract with the backend, so it is not editable here.
+      </p>
+    </section>
+
+    <div class="form-actions">
+      <button type="submit" name="action" value="reset" class="ghost">Reset to agent.json</button>
+      <button type="submit" name="action" value="save" class="btn end">Save only</button>
+      <button type="submit" name="action" value="publish" class="btn">Save &amp; publish</button>
+    </div>
+  </form>
+
+  <details class="card block preview">
+    <summary>What gets sent to AssemblyAI</summary>
+    <pre>{{ config }}</pre>
+  </details>
+</div>
+
+<script>
+  document.getElementById('copy-link').onclick = async (event) => {
+    const input = document.getElementById('share-link');
+    input.select();
+    try { await navigator.clipboard.writeText(input.value); } catch { document.execCommand('copy'); }
+    event.target.textContent = 'Copied';
+    setTimeout(() => { event.target.textContent = 'Copy'; }, 1600);
+  };
+  // The range inputs read as nothing without their value beside them.
+  document.querySelectorAll('input[type=range]').forEach((range) => {
+    const out = document.createElement('span');
+    out.className = 'range-value mono';
+    const paint = () => { out.textContent = range.value; };
+    range.after(out);
+    range.addEventListener('input', paint);
+    paint();
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,41 @@
+# One-click deploy. Render prompts only for ASSEMBLYAI_API_KEY — everything
+# else is generated or derived, including the public URL the agent's webhooks
+# point at, which Render provides as RENDER_EXTERNAL_HOSTNAME.
+databases:
+  - name: claimvoice-db
+    plan: free
+    databaseName: claimvoice
+    user: claimvoice
+
+services:
+  - type: web
+    name: claimvoice
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    # Runs before traffic is switched over, on every deploy. Migrating, seeding
+    # the policy book and publishing the agent are all idempotent, so a redeploy
+    # updates the same agent rather than piling up new ones.
+    preDeployCommand: >-
+      python manage.py migrate --noinput &&
+      python manage.py seed_policies &&
+      python manage.py publish_agent
+    startCommand: gunicorn claimvoice.wsgi --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+    healthCheckPath: /healthz/
+    envVars:
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: claimvoice-db
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: PYTHON_VERSION
+        value: "3.13.4"
+      # Only the agent should be able to file a claim, so the webhooks require
+      # this header and the published tools carry it.
+      - key: CLAIM_WEBHOOK_SECRET
+        generateValue: true

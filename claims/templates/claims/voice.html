@@ -1,0 +1,114 @@
+{% extends "claims/base.html" %}
+{% load static %}
+
+{% block title %}Talk to Ivy · ClaimVoice{% endblock %}
+{% block nav_voice %}on{% endblock %}
+
+{% block main %}
+<div class="stage">
+  <section class="call">
+    <div class="call-head">
+      <span class="mono">Live intake</span>
+      <span class="spacer"></span>
+      <span class="status idle" id="status"><span id="status-text">idle</span></span>
+      <span class="meter"><span id="elapsed">0:00</span><span id="cost">$0.000</span></span>
+    </div>
+
+    <div class="orb-wrap">
+      <span class="ring"></span>
+      <span class="ring two"></span>
+      <div class="orb" id="orb"></div>
+    </div>
+
+    <div class="transcript" id="transcript">
+      <div class="empty" id="transcript-empty">
+        {% if not has_key %}
+          No ASSEMBLYAI_API_KEY found. Add it to <code>.env</code> and restart the server.
+        {% elif not agent_id %}
+          No agent published yet. Run <code>python manage.py publish_agent</code>, then reload.
+        {% else %}
+          Press start. Ivy verifies who you are, then takes the claim.<br><br>
+          Try <b>PV482193</b> with last four <b>2887</b> — you are Dana Whitfield,
+          driving a silver 2019 Toyota Camry. More on the
+          <a href="{% url 'directory' %}" style="color:var(--accent)">directory</a>.
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="controls">
+      <select id="mic" aria-label="Microphone"><option value="">Default microphone</option></select>
+      <button class="btn" id="call-btn" {% if not agent_id or not has_key %}disabled{% endif %}>Start call</button>
+    </div>
+  </section>
+
+  <aside class="rail">
+    <div class="rail-head">
+      <button class="ghost on" id="tab-claim">Claim</button>
+      <button class="ghost" id="tab-events">Events</button>
+      <button class="ghost" id="tab-agent">Agent</button>
+    </div>
+
+    <div class="rail-body" id="pane-claim">
+      {% if not tool_live %}
+      <div class="banner">
+        <code>log_claim</code> is not published: AssemblyAI stores HTTP tools only, so it
+        needs a public URL to post to. Set one under
+        <a href="{% url 'settings' %}" style="color:inherit;text-decoration:underline">Agent</a>
+        and publish, or Ivy will talk but never file anything.
+      </div>
+      {% endif %}
+      <div class="identity card" id="identity" hidden>
+        <div class="id-head">
+          <span class="id-name" id="id-name">—</span>
+          <span class="pill ok" id="id-status">—</span>
+        </div>
+        <div class="id-row"><span class="k mono">Policy</span><span id="id-policy">—</span></div>
+        <div class="id-row"><span class="k mono">Vehicle</span><span id="id-vehicle">—</span></div>
+        <div class="id-row"><span class="k mono">Cover</span><span id="id-cover">—</span></div>
+      </div>
+
+      <div class="fnol" id="fnol">
+        <div class="fnol-row" data-field="policy_number"><span class="k">Policy</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="incident_type"><span class="k">Incident</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="location"><span class="k">Location</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="is_drivable"><span class="k">Drivable</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="injuries_reported"><span class="k">Injuries</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="caller_name"><span class="k">Caller</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="vehicle"><span class="k">Vehicle</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="severity"><span class="k">Severity</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="risk_score"><span class="k">Risk score</span><span class="v">—</span></div>
+        <div class="fnol-row" data-field="claim_reference"><span class="k">Reference</span><span class="v">—</span></div>
+      </div>
+      <p class="empty" style="margin-top:18px">
+        These fill in the moment Ivy fires <code>log_claim</code>. AssemblyAI posts the
+        claim to Django itself, and the row lands on the
+        <a href="{% url 'dashboard' %}" style="color:var(--accent)">dispatcher board</a> as she reads the reference back.
+      </p>
+    </div>
+
+    <div class="rail-body" id="pane-events" hidden>
+      <div class="empty" id="events-empty">Every websocket frame, both directions. Repeats collapse into a count.</div>
+      <div id="events"></div>
+    </div>
+
+    <div class="rail-body" id="pane-agent" hidden>
+      <div id="agent-json">Loading the published agent…</div>
+    </div>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.CLAIMVOICE = {
+    agentId: "{{ agent_id|escapejs }}",
+    toolLive: {{ tool_live|yesno:"true,false" }},
+    tokenUrl: "{% url 'token' %}",
+    agentUrl: "{% url 'agent' %}",
+    feedUrl: "{% url 'claim-feed' %}",
+    conversationUrl: "{% url 'conversation-ingest' %}",
+    sessionUrl: "{% url 'conversation-session' %}"
+  };
+</script>
+<script src="{% static 'claims/js/voice.js' %}"></script>
+{% endblock %}

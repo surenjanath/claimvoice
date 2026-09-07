@@ -1,0 +1,117 @@
+{% extends "claims/base.html" %}
+{% load static %}
+
+{% block title %}Dispatcher · ClaimVoice{% endblock %}
+{% block nav_dash %}on{% endblock %}
+
+{% block main %}
+<div class="board">
+  <div class="board-head">
+    <div>
+      <h1>Dispatcher board</h1>
+      <p>First notices of loss, scored and triaged the moment Ivy files them.</p>
+    </div>
+    <div class="right">
+      <span class="livedot mono" id="live-label">Live</span>
+      <span class="mono" style="color:var(--faint)" id="last-update">—</span>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="card stat"><div class="k mono">Claims today</div><div class="v" id="stat-total">0</div></div>
+    <div class="card stat crit"><div class="k mono">Critical risk</div><div class="v" id="stat-critical">0</div></div>
+    <div class="card stat"><div class="k mono">Tows dispatched</div><div class="v" id="stat-tows">0</div></div>
+    <div class="card stat"><div class="k mono">Average risk</div><div class="v" id="stat-avg">0</div></div>
+  </div>
+
+  <div class="tabs-row">
+    <button class="tab-btn on" data-view="claims">Claims</button>
+    <button class="tab-btn" data-view="conversations">Conversations</button>
+    <input type="search" id="search" placeholder="Search policy, name, location…" autocomplete="off">
+  </div>
+
+  <section id="view-claims">
+    <div class="filters">
+      <button class="chip on" data-filter="all">All</button>
+      <button class="chip" data-filter="new">New</button>
+      <button class="chip" data-filter="dispatched">Dispatched</button>
+      <button class="chip" data-filter="closed">Closed</button>
+      <button class="chip" data-filter="critical">Critical</button>
+      <button class="chip" data-filter="unverified">Unverified</button>
+      <span class="count" id="row-count"></span>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="width:96px">Claim</th>
+          <th style="width:128px">Policy</th>
+          <th style="width:104px">Incident</th>
+          <th>Location</th>
+          <th style="width:170px">Risk</th>
+          <th style="width:172px">Vehicle</th>
+          <th style="width:190px">Status</th>
+          <th style="width:82px">Time</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <div class="board-empty" id="board-empty">
+      <p>No claims yet. <a href="{% url 'voice' %}">Talk to Ivy</a> and one lands here mid-sentence.</p>
+      <p style="margin-top:8px;font-size:12.5px">Or seed a few: <code class="mono">python manage.py seed_claims</code></p>
+    </div>
+  </section>
+
+  <section id="view-conversations" hidden>
+    <div class="filters">
+      <button class="chip on" data-cfilter="all">All calls</button>
+      <button class="chip" data-cfilter="verified">Verified</button>
+      <button class="chip" data-cfilter="unverified">Unverified</button>
+      <span class="count" id="conv-count"></span>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="width:96px">Call</th>
+          <th style="width:180px">Caller</th>
+          <th style="width:96px">Channel</th>
+          <th>What was said</th>
+          <th style="width:110px">Turns</th>
+          <th style="width:110px">Claim</th>
+          <th style="width:92px">Length</th>
+          <th style="width:82px">Time</th>
+        </tr>
+      </thead>
+      <tbody id="conv-rows"></tbody>
+    </table>
+
+    <div class="board-empty" id="conv-empty">
+      <p>No calls recorded yet. Every call is transcribed here for tuning the prompt.</p>
+    </div>
+  </section>
+</div>
+
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-head">
+    <span id="drawer-title" class="mono">—</span>
+    <button class="ghost" id="drawer-close">Close</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.CLAIMVOICE = {
+    feedUrl: "{% url 'claim-feed' %}",
+    statusUrl: "/api/claims/__ID__/status/",
+    conversationsUrl: "{% url 'conversation-feed' %}",
+    conversationDetailUrl: "/api/conversations/__ID__/",
+    csrfToken: "{{ csrf_token }}"
+  };
+</script>
+<script src="{% static 'claims/js/dashboard.js' %}"></script>
+{% endblock %}

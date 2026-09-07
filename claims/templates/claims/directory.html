@@ -1,0 +1,34 @@
+{% extends "claims/base.html" %}
+{% load static %}
+
+{% block title %}Directory · ClaimVoice{% endblock %}
+{% block nav_dir %}on{% endblock %}
+
+{% block main %}
+<div class="board">
+  <div class="board-head">
+    <div>
+      <h1>Policy directory</h1>
+      <p>The book Ivy verifies callers against. Pick one and call in as them.</p>
+    </div>
+    <div class="right">
+      <input type="search" id="dir-search" placeholder="Search name or policy…" autocomplete="off">
+    </div>
+  </div>
+
+  <div class="banner" style="margin-bottom:18px">
+    Demo data. Every number is in the +1&nbsp;555&nbsp;01xx range reserved for fiction, and the
+    last four digits are the shared secret Ivy checks — they are shown here because this is a
+    test book, not a real one.
+  </div>
+
+  <div class="cards" id="holders"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.CLAIMVOICE = { policyholdersUrl: "{% url 'policyholder-feed' %}" };
+</script>
+<script src="{% static 'claims/js/directory.js' %}"></script>
+{% endblock %}
