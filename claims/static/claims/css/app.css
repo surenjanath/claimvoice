@@ -1176,3 +1176,27 @@ a.tel:hover { color: var(--text); }
   }
   .drawer-body { overflow: visible; }
 }
+
+/* --- recovery operator panel --------------------------------------------- */
+
+.vendor-list { display: flex; flex-direction: column; gap: 10px; }
+.vendor-call {
+  padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--surface-2);
+}
+.vendor-note {
+  margin-top: 10px; padding: 9px 12px; border-radius: 8px;
+  background: rgba(251, 146, 60, .07); border: 1px solid rgba(251, 146, 60, .25);
+  color: #fdba74; font-size: 12px; line-height: 1.5;
+}
+.emergency {
+  margin-top: 16px; padding: 14px; border-radius: 8px;
+  border: 1px solid rgba(248, 113, 113, .3); background: rgba(248, 113, 113, .06);
+}
+.emergency .k { color: var(--critical); margin-bottom: 8px; }
+.emergency p { color: var(--muted); font-size: 12.5px; line-height: 1.55; margin-bottom: 10px; }
+.emergency-row { display: flex; align-items: baseline; gap: 10px; padding: 4px 0; font-size: 13px; }
+.emergency-row b { color: var(--text); font-weight: 500; min-width: 168px; }
+.emergency-row a { color: var(--critical); font-family: var(--mono); }
+.emergency-row span { color: var(--faint); font-size: 12px; }
+.emergency .tiny { color: var(--faint); font-size: 11.5px; margin: 10px 0 0; }

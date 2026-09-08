@@ -346,6 +346,7 @@
     body.append(notePanel(claim));
     body.append(photoPanel(claim));
     body.append(dispatchPanel(claim));
+    body.append(vendorPanel(claim));
     const footer = document.createElement('div');
     footer.className = 'actions';
     if (claim.conversation_id) {
@@ -772,6 +773,119 @@
       }
     };
     wrap.append(form);
+    return wrap;
+  }
+
+  // --- ringing the operator -------------------------------------------------
+  // The claim tells us the truck is needed; this is the call that gets one
+  // moving. The same loop runs when it is late — chase, then look further out.
+  function vendorPanel(claim) {
+    const wrap = document.createElement('div');
+    wrap.className = 'vendor-panel';
+
+    const heading = document.createElement('div');
+    heading.className = 'k mono';
+    heading.style.margin = '24px 0 10px';
+    heading.textContent = 'Recovery operator';
+    wrap.append(heading);
+
+    const list = document.createElement('div');
+    list.className = 'vendor-list';
+    const status = document.createElement('p');
+    status.className = 'empty';
+    status.textContent = 'Loading…';
+    wrap.append(status, list);
+
+    const action = document.createElement('button');
+    action.className = 'btn small';
+    action.style.marginTop = '12px';
+    wrap.append(action);
+
+    const paint = (data) => {
+      const calls = data.calls || [];
+      list.replaceChildren();
+      for (const call of calls) {
+        const row = document.createElement('div');
+        row.className = 'vendor-call';
+        const outcome = call.outcome
+          ? `<span class="tag ${call.outcome === 'accepted' ? 'verified' : 'unverified'}">${escape(call.outcome_label)}</span>`
+          : `<span class="tag">${escape(call.status_label)}</span>`;
+        row.innerHTML = `
+          <div class="d-head">
+            <span class="d-kind">${escape(call.vendor_name)}</span>
+            ${outcome}
+          </div>
+          <div class="d-meta">${[
+            call.purpose_label,
+            call.distance_km != null ? `${call.distance_km} km away` : '',
+            call.eta_minutes != null ? `ETA ${call.eta_minutes} min` : '',
+            call.simulated ? 'not dialled' : '',
+          ].filter(Boolean).map(escape).join(' · ')}</div>
+          ${call.note ? `<div class="d-note">${escape(call.note)}</div>` : ''}`;
+        list.append(row);
+      }
+
+      status.textContent = calls.length
+        ? ''
+        : 'Nobody called yet.';
+      status.hidden = Boolean(calls.length);
+
+      action.textContent = calls.length
+        ? `Try ${data.next_vendor || 'the next operator'}`
+        : `Call ${data.next_vendor || 'an operator'}`;
+      action.disabled = !data.next_vendor;
+      if (!data.outbound_ready) {
+        const note = document.createElement('p');
+        note.className = 'vendor-note';
+        note.textContent = `Outbound calling is off (${data.outbound_detail}). The call is recorded and the caller is still updated — no phone rings.`;
+        wrap.append(note);
+      }
+
+      // Emergency contacts are shown, never dialled. A machine deciding on its
+      // own to summon police can send them to the wrong place, and a false
+      // dispatch is somebody else's emergency going unanswered.
+      if (data.emergency && data.emergency.suggest) {
+        const panel = document.createElement('div');
+        panel.className = 'emergency';
+        panel.innerHTML = `
+          <div class="k mono">Worth a call yourself</div>
+          <p>${escape(data.emergency.reasons.join('; '))}.</p>
+          ${data.emergency.contacts
+            .map((contact) =>
+              `<div class="emergency-row"><b>${escape(contact.name)}</b>
+               <a href="tel:${escape(contact.phone)}">${escape(contact.phone)}</a>
+               <span>${escape(contact.note)}</span></div>`)
+            .join('')}
+          <p class="tiny">ClaimVoice never dials these. You do.</p>`;
+        wrap.append(panel);
+      }
+    };
+
+    const load = () =>
+      fetch(CFG.vendorCallsUrl.replace('__ID__', claim.id))
+        .then((res) => res.json())
+        .then(paint)
+        .catch(() => { status.textContent = 'Could not load the call log.'; });
+
+    action.onclick = async () => {
+      action.disabled = true;
+      action.textContent = 'Calling…';
+      try {
+        const res = await fetch(CFG.callVendorUrl.replace('__ID__', claim.id), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CFG.csrfToken },
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          status.hidden = false;
+          status.textContent = body.error || 'Could not place that call.';
+        }
+      } finally {
+        load();
+      }
+    };
+
+    load();
     return wrap;
   }
 

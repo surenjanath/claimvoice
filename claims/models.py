@@ -9,6 +9,7 @@ from .models_policy import (  # noqa: F401  (re-exported: claims.models is the i
     Conversation,
     Dispatch,
     Policyholder,
+    VendorCall,
     VerificationAttempt,
 )
 
@@ -146,6 +147,7 @@ class Claim(models.Model):
             "conversation_id": self.conversation_id,
             "verified": bool(self.conversation and self.conversation.verified),
             "dispatches": [d.as_dict() for d in self.dispatches.all()],
+            "vendor_calls": [v.as_dict() for v in self.vendor_calls.all()[:20]],
             "lat": self.lat,
             "lng": self.lng,
             "needs_human": self.needs_human,

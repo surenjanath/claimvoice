@@ -173,6 +173,65 @@ exactly what happened here: a claim landed on a row from eighteen minutes earlie
 and the call that actually filed it showed no claim at all. Two tests pin the
 behaviour down.
 
+## Getting a truck moving
+
+Taking the claim in ninety seconds is the easy half. The part that actually
+helps a driver on a hard shoulder is the call afterwards — ring a recovery
+operator, give them the location and the vehicle, ask how long, then tell the
+driver. Rae makes that call.
+
+```
+dispatcher asks for a tow
+  rang I-95 Rapid Tow (5.1 km away)
+that operator is busy
+  escalated to Harbor Point Recovery (129.5 km)
+  caller told: The first operator could not take it, so we are arranging
+               Harbor Point Recovery instead.
+the next one takes it, 25 minutes
+  dispatch now: Harbor Point Recovery · ETA 25 min · En route
+  caller told: Harbor Point Recovery is on the way to Interstate 95
+               northbound, just past Exit 12, about 25 minutes.
+```
+
+Rae is a second published agent (`vendor_agent.json`, `publish_agent --vendor`)
+with a different job and a much shorter script: say who is calling, give the
+location, get a yes or no and a number of minutes, and hang up. Dispatch desks
+are busy. Her one tool is `record_eta`, and — like every tool here — every field
+is copied or picked from a list, never composed.
+
+Vendors are ranked by depot distance when the claim has a pin, by location words
+when it does not, and an escalation excludes anyone already tried, so it moves
+down the list instead of redialling the truck that just said no.
+
+### When it runs late
+
+`manage.py watch_dispatches [--loop 60]` compares each en-route tow against the
+time it promised. First time over, it chases the operator that took the job.
+Still over on the next pass, it reassigns to the next-closest one, cancels the
+old dispatch and tells the caller. Out of operators, and the claim is handed to
+a person.
+
+Chasing the operator you already have is not another attempt at finding one, so
+it does not count against the escalation budget — counting it stranded callers
+who still had options.
+
+### Two things that do not happen automatically
+
+**Nothing dials a real number by default.** Every vendor in the book is in a
+range reserved for fiction, a test asserts it, and even then a call is only
+placed when the deployment has a registered number and has set `OUTBOUND_CALLS`.
+Otherwise the call is recorded as simulated: same row, same escalation, same
+updates to the caller, no phone ringing. That is also the only way to run this
+before the Twilio step, since an outbound call needs a `from_number` AssemblyAI
+knows about.
+
+**Nothing calls the police.** A machine that can summon emergency services on
+its own reading of a situation can send them to the wrong place, and a false
+dispatch is somebody else's emergency going unanswered. When a claim looks like
+one where you would want them — injuries reported, a fire or a rollover, a
+vehicle stopped on a highway — the dispatcher gets the numbers and the reasons,
+and makes that call themselves. The panel says so in as many words.
+
 ## Insights
 
 `/insights/` is the other half of the dashboard: not what is happening, but how

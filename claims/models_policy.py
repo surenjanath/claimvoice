@@ -351,3 +351,99 @@ class Dispatch(models.Model):
             "automatic": self.automatic,
             "created_at": self.created_at.isoformat(),
         }
+
+
+class VendorCall(models.Model):
+    """A call ClaimVoice places to a vendor on the caller's behalf.
+
+    Ivy takes the claim; this is the follow-up nobody wants to make — ringing
+    the recovery operator, giving them the location, asking how long. The row
+    exists whether or not the dial actually happened, so a deployment with no
+    phone number still produces the same record and the same escalation.
+    """
+
+    class Purpose(models.TextChoices):
+        REQUEST = "request", "Request the job"
+        ETA_CHECK = "eta_check", "Chase the ETA"
+        REASSIGN = "reassign", "Reassign after a delay"
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        DIALING = "dialing", "Dialing"
+        IN_PROGRESS = "in_progress", "In progress"
+        DONE = "done", "Completed"
+        FAILED = "failed", "Failed"
+        SIMULATED = "simulated", "Simulated"
+
+    class Outcome(models.TextChoices):
+        ACCEPTED = "accepted", "Accepted the job"
+        DECLINED = "declined", "Declined"
+        NO_ANSWER = "no_answer", "No answer"
+        VOICEMAIL = "voicemail", "Voicemail"
+
+    claim = models.ForeignKey(
+        "claims.Claim", related_name="vendor_calls", on_delete=models.CASCADE
+    )
+    dispatch = models.ForeignKey(
+        "claims.Dispatch",
+        null=True,
+        blank=True,
+        related_name="vendor_calls",
+        on_delete=models.SET_NULL,
+    )
+    vendor_name = models.CharField(max_length=120)
+    vendor_phone = models.CharField(max_length=24)
+    distance_km = models.FloatField(null=True, blank=True)
+
+    purpose = models.CharField(max_length=16, choices=Purpose.choices, default=Purpose.REQUEST)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
+    outcome = models.CharField(max_length=16, choices=Outcome.choices, blank=True)
+
+    eta_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    # The agent picks this from a list; free text would stop the tool firing.
+    decline_reason = models.CharField(max_length=32, blank=True)
+
+    # What AssemblyAI called it, when a real call was placed.
+    provider_call_id = models.CharField(max_length=80, blank=True)
+    conversation = models.ForeignKey(
+        "claims.Conversation",
+        null=True,
+        blank=True,
+        related_name="vendor_calls",
+        on_delete=models.SET_NULL,
+    )
+    note = models.CharField(max_length=255, blank=True)
+
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.vendor_name} for CV-{self.claim_id:05d}"
+
+    @property
+    def simulated(self):
+        return self.status == self.Status.SIMULATED
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "claim_id": self.claim_id,
+            "vendor_name": self.vendor_name,
+            "vendor_phone": self.vendor_phone,
+            "distance_km": self.distance_km,
+            "purpose": self.purpose,
+            "purpose_label": self.get_purpose_display(),
+            "status": self.status,
+            "status_label": self.get_status_display(),
+            "outcome": self.outcome,
+            "outcome_label": self.get_outcome_display() if self.outcome else "",
+            "eta_minutes": self.eta_minutes,
+            "decline_reason": self.decline_reason,
+            "simulated": self.simulated,
+            "note": self.note,
+            "created_at": self.created_at.isoformat(),
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+        }

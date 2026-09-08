@@ -184,6 +184,16 @@ DESK_AUTH = env_bool("DESK_AUTH", not DEBUG)
 # deliberate choice for a demo deployment, never a default: off unless asked
 # for, and even then only ever one policy at a time, looked up by name.
 DEMO_CREDENTIALS = env_bool("DEMO_CREDENTIALS", False)
+
+# Placing a call reaches outside the building, so it is off unless asked for.
+# It also needs a number registered with AssemblyAI — the same import
+# `connect_phone` does — because that is what an outbound call dials from.
+OUTBOUND_CALLS = env_bool("OUTBOUND_CALLS", False)
+OUTBOUND_FROM_NUMBER = os.environ.get("OUTBOUND_FROM_NUMBER", "") or os.environ.get(
+    "TWILIO_PHONE_NUMBER", ""
+)
+# The agent that speaks to vendors. Published by `publish_agent --vendor`.
+VENDOR_AGENT_ID = os.environ.get("VENDOR_AGENT_ID", "")
 DESK_PASSWORD = os.environ.get("DESK_PASSWORD", "claimvoice")
 
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")

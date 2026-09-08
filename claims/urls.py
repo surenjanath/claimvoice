@@ -1,6 +1,14 @@
 from django.urls import path
 
-from . import desk, views, views_dispatch, views_identity, views_insights, views_share
+from . import (
+    desk,
+    views,
+    views_dispatch,
+    views_identity,
+    views_insights,
+    views_share,
+    views_vendor,
+)
 
 urlpatterns = [
     path("", views.voice, name="voice"),
@@ -14,6 +22,7 @@ urlpatterns = [
     path("api/verify/", views_identity.verify_policyholder, name="verify"),
     path("api/log-claim/", views.log_claim, name="log-claim"),
     path("api/end-call/", views_identity.end_call, name="end-call"),
+    path("api/vendor-eta/", views_vendor.record_eta, name="vendor-eta"),
     path("api/request-human/", views_identity.request_human, name="request-human"),
     # Read models for the dispatcher screens.
     path("api/claims/", views.claim_feed, name="claim-feed"),
@@ -29,6 +38,8 @@ urlpatterns = [
     path("api/share/<str:token>/photos/<int:pk>/", views_share.claim_photo_file, name="claim-photo-file"),
     path("api/revisions/<int:pk>/restore/", views_share.restore_revision, name="restore-revision"),
     path("api/claims/<int:pk>/dispatch/", views_dispatch.create_dispatch, name="create-dispatch"),
+    path("api/claims/<int:pk>/call-vendor/", views_vendor.call_vendor, name="call-vendor"),
+    path("api/claims/<int:pk>/vendor-calls/", views_vendor.vendor_calls, name="vendor-calls"),
     path("api/dispatches/", views_dispatch.dispatch_feed, name="dispatch-feed"),
     path("api/vendors/", views_dispatch.vendor_feed, name="vendor-feed"),
     path("api/dispatches/<int:pk>/status/", views_dispatch.dispatch_status, name="dispatch-status"),

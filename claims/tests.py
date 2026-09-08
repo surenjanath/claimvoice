@@ -19,6 +19,7 @@ from .models import (
     Conversation,
     Dispatch,
     Policyholder,
+    VendorCall,
     VerificationAttempt,
 )
 from .risk import score_claim
@@ -1819,3 +1820,175 @@ class RedactionTests(TestCase):
         from claims.redact import blank_spans
 
         self.assertEqual(blank_spans(b"not a wav", []), b"not a wav")
+
+
+class VendorCallTests(TestCase):
+    """Ivy takes the claim; this is the call that actually gets a truck moving."""
+
+    def setUp(self):
+        self.holder = Policyholder.objects.create(
+            policy_number="PV482193", full_name="Dana Whitfield", phone="+15550142887"
+        )
+        self.claim = Claim.objects.create(
+            policy_number="PV482193",
+            incident_type="collision",
+            location="I-95 northbound near exit 12",
+            is_drivable=False,
+            tow_required=True,
+            policyholder=self.holder,
+            lat=39.95,
+            lng=-75.16,
+        )
+
+    def test_the_nearest_operator_is_called_first(self):
+        from claims.vendor_calls import place_call
+
+        call = place_call(self.claim)
+        self.assertEqual(call.vendor_name, "I-95 Rapid Tow")
+        self.assertLess(call.distance_km, 10)
+
+    def test_without_outbound_the_call_is_recorded_not_dialled(self):
+        from claims.vendor_calls import place_call
+
+        call = place_call(self.claim)
+        self.assertTrue(call.simulated)
+        self.assertIn("OUTBOUND_CALLS is off", call.note)
+
+    def test_accepting_sets_the_dispatch_and_tells_the_caller(self):
+        from claims.vendor_calls import place_call, record_outcome
+
+        call = place_call(self.claim)
+        record_outcome(call, accepted=True, eta_minutes=25)
+
+        dispatch = self.claim.dispatches.get()
+        self.assertEqual(dispatch.vendor, "I-95 Rapid Tow")
+        self.assertEqual(dispatch.eta_minutes, 25)
+        self.assertEqual(dispatch.status, Dispatch.Status.EN_ROUTE)
+        note = self.claim.notes.order_by("-created_at").first()
+        self.assertIn("I-95 Rapid Tow", note.body)
+        self.assertIn("25 minutes", note.body)
+
+    def test_declining_moves_down_the_list_without_redialling(self):
+        from claims.vendor_calls import place_call, record_outcome
+
+        first = place_call(self.claim)
+        record_outcome(first, accepted=False, reason="busy")
+
+        second = self.claim.vendor_calls.order_by("-created_at").first()
+        self.assertNotEqual(second.vendor_phone, first.vendor_phone)
+        self.assertEqual(second.purpose, VendorCall.Purpose.REASSIGN)
+        self.assertIn(second.vendor_name, self.claim.notes.first().body)
+
+    def test_running_out_of_operators_hands_over_to_a_person(self):
+        from claims.vendor_calls import place_call, record_outcome
+
+        for _ in range(5):
+            call = place_call(self.claim)
+            if not call:
+                break
+            record_outcome(call, accepted=False, reason="busy")
+
+        self.claim.refresh_from_db()
+        self.assertTrue(self.claim.needs_human)
+        self.assertEqual(self.claim.handoff_reason, "no_tow_available")
+
+    def test_a_late_tow_is_chased_then_reassigned(self):
+        from claims.vendor_calls import chase, overdue_calls, place_call, record_outcome
+
+        call = place_call(self.claim)
+        record_outcome(call, accepted=True, eta_minutes=25)
+        dispatch = self.claim.dispatches.get()
+        Dispatch.objects.filter(pk=dispatch.pk).update(
+            updated_at=timezone.now() - timedelta(minutes=45)
+        )
+        dispatch.refresh_from_db()
+
+        self.assertTrue(any(d.pk == dispatch.pk for d, _ in overdue_calls()))
+
+        chased = chase(dispatch, 15)
+        self.assertEqual(chased.purpose, VendorCall.Purpose.ETA_CHECK)
+        self.assertEqual(chased.vendor_name, "I-95 Rapid Tow")
+
+        self.claim.notes.update(created_at=timezone.now() - timedelta(minutes=30))
+        moved = chase(dispatch, 25)
+        self.assertEqual(moved.purpose, VendorCall.Purpose.REASSIGN)
+        self.assertNotEqual(moved.vendor_name, "I-95 Rapid Tow")
+        dispatch.refresh_from_db()
+        self.assertEqual(dispatch.status, Dispatch.Status.CANCELLED)
+
+    def test_chasing_does_not_use_up_an_escalation_attempt(self):
+        """Ringing the operator already assigned is not another attempt at
+        finding one, and counting it stranded callers who still had options."""
+        from claims.vendor_calls import chase, place_call, record_outcome
+
+        call = place_call(self.claim)
+        record_outcome(call, accepted=True, eta_minutes=20)
+        dispatch = self.claim.dispatches.get()
+        Dispatch.objects.filter(pk=dispatch.pk).update(
+            updated_at=timezone.now() - timedelta(minutes=60)
+        )
+        dispatch.refresh_from_db()
+        for _ in range(3):
+            chase(dispatch, 30)
+            self.claim.notes.update(created_at=timezone.now() - timedelta(minutes=30))
+        self.claim.refresh_from_db()
+        self.assertFalse(self.claim.needs_human)
+
+    def test_the_webhook_records_what_the_operator_said(self):
+        from claims.vendor_calls import place_call
+
+        place_call(self.claim)
+        body = self.client.post(
+            reverse("vendor-eta"),
+            data=json.dumps({"accepted": "yes", "eta_minutes": 18}),
+            content_type="application/json",
+        ).json()
+        self.assertTrue(body["ok"])
+        self.assertIn("18 minutes", body["message"])
+        self.assertEqual(self.claim.dispatches.get().eta_minutes, 18)
+
+    def test_a_nonsense_eta_is_dropped_rather_than_promised(self):
+        from claims.vendor_calls import place_call
+
+        place_call(self.claim)
+        self.client.post(
+            reverse("vendor-eta"),
+            data=json.dumps({"accepted": "yes", "eta_minutes": 99999}),
+            content_type="application/json",
+        )
+        self.assertIsNone(self.claim.vendor_calls.first().eta_minutes)
+
+    def test_the_caller_is_not_texted_twice_in_a_minute(self):
+        from claims.vendor_calls import tell_the_caller
+
+        tell_the_caller(self.claim, "First update.")
+        second = tell_the_caller(self.claim, "Second update.")
+        self.assertEqual(second["skipped"], "too_soon")
+        # Still written down, just not sent.
+        self.assertEqual(self.claim.notes.count(), 2)
+
+    def test_emergency_services_are_offered_never_dialled(self):
+        from claims.vendor_calls import emergency_options
+
+        self.claim.injuries_reported = True
+        self.claim.save(update_fields=["injuries_reported"])
+        options = emergency_options(self.claim)
+        self.assertTrue(options["suggest"])
+        self.assertFalse(options["dial_automatically"])
+        self.assertIn("injuries were reported on the call", options["reasons"])
+        self.assertIn("highway", " ".join(options["reasons"]))
+
+    def test_every_vendor_number_is_in_the_fiction_range(self):
+        """Nothing in the book may ring a real recovery operator, because a
+        wrong turn here dispatches a real truck to a place nobody crashed."""
+        import re
+
+        from claims.vendors import BOOK
+
+        for kind, roster in BOOK.items():
+            for vendor in roster:
+                digits = re.sub(r"\D", "", vendor["phone"])
+                self.assertTrue(
+                    digits.startswith("1555") or digits.startswith("555"),
+                    f"{kind}/{vendor['name']} is not a fiction-range number: {vendor['phone']}",
+                )

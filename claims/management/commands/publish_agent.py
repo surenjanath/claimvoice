@@ -9,6 +9,7 @@ call.
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -52,6 +53,11 @@ class Command(BaseCommand):
             help="Create a new agent instead of updating the stored AGENT_ID.",
         )
         parser.add_argument(
+            "--vendor",
+            action="store_true",
+            help="Publish vendor_agent.json — the agent that rings recovery operators.",
+        )
+        parser.add_argument(
             "--from-file",
             action="store_true",
             help="Discard the saved profile and republish agent.json as it stands.",
@@ -68,6 +74,9 @@ class Command(BaseCommand):
                 "ASSEMBLYAI_API_KEY is not set. Add it to .env "
                 "(https://www.assemblyai.com/dashboard/api-keys)."
             )
+
+        if options["vendor"]:
+            return self.publish_vendor_agent()
 
         profile = AgentProfile.load()
         if options["from_file"]:
@@ -117,3 +126,37 @@ class Command(BaseCommand):
                 )
             )
         self.stdout.write("  Saved AGENT_ID to .env")
+
+    def publish_vendor_agent(self):
+        """The outbound agent is a fixed script, not something the settings page
+        tunes, so it is published straight from its file."""
+        import json as _json
+        from pathlib import Path as _Path
+
+        from claims.agent_api import publish_agent as _publish
+
+        config = _json.loads((_Path(settings.BASE_DIR) / "vendor_agent.json").read_text())
+        base = AgentProfile.load().base_url
+        if not base:
+            raise CommandError(
+                "No public base URL. Rae's tools have to be reachable, so publish the "
+                "main agent with --public-url first."
+            )
+        for tool in config["tools"]:
+            path = "/api/vendor-eta/" if tool["name"] == "record_eta" else "/api/end-call/"
+            tool["http"] = {"url": base + path, "http_method": "POST"}
+            if settings.CLAIM_WEBHOOK_SECRET:
+                tool["http"]["headers"] = [
+                    {"name": "X-Claim-Secret", "value": settings.CLAIM_WEBHOOK_SECRET}
+                ]
+
+        agent_id, created = _publish(config, os.environ.get("VENDOR_AGENT_ID", ""))
+        write_env("VENDOR_AGENT_ID", agent_id, _Path(settings.BASE_DIR) / ".env")
+        self.stdout.write(
+            self.style.SUCCESS(
+                f'{"Created" if created else "Updated"} "{config["name"]}"  '
+                f"VENDOR_AGENT_ID={agent_id}"
+            )
+        )
+        for tool in config["tools"]:
+            self.stdout.write(f"  {tool['name']} posts to {tool['http']['url']}")

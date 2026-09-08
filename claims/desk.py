@@ -19,6 +19,7 @@ PUBLIC_EXACT = {
     "/api/verify/",
     "/api/log-claim/",
     "/api/end-call/",
+    "/api/vendor-eta/",
     "/api/request-human/",
     "/api/recordings/upload/",
     "/api/conversations/ingest/",
