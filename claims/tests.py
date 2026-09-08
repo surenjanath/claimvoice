@@ -1710,3 +1710,112 @@ class WaveThreeTests(TestCase):
         body = self.client.get(reverse("claim-live", args=[claim.share_token])).json()
         self.assertEqual(body["risk_score"], 70)
         self.assertIn("Highway", body["risk_factors"])
+
+
+class RedactionTests(TestCase):
+    """The caller says the verification digits out loud. They are the secret the
+    identity check rests on, so they are not kept — in text or in audio."""
+
+    def setUp(self):
+        self.holder = Policyholder.objects.create(
+            policy_number="PV482193", full_name="Dana Whitfield", phone="+15550142887"
+        )
+
+    def turns(self):
+        return [
+            {"role": "agent", "text": "What is your policy number?", "at": 20.0},
+            {"role": "caller", "text": "My policy number is P V 4 8 2 1 9 3.", "at": 21.0},
+            {"role": "agent", "text": "And the last four digits of the phone number?", "at": 34.0},
+            {"role": "caller", "text": "The last four digits are 2 8 8 7.", "at": 40.0},
+            {"role": "caller", "text": "I'm on interstate 95 near exit 12.", "at": 55.0},
+        ]
+
+    def test_the_spoken_answer_is_masked_and_nothing_else_is(self):
+        from claims.redact import redact_turns
+
+        cleaned, spans = redact_turns(self.turns(), known_last4="2887")
+        answer = cleaned[3]
+        self.assertNotIn("2887", answer["text"])
+        self.assertNotIn("2 8 8 7", answer["text"])
+        self.assertIn("••••", answer["text"])
+        self.assertTrue(answer["redacted"])
+        # The policy number is an identifier the agent reads back anyway, and
+        # the location is the claim. Neither is the secret.
+        self.assertIn("4 8 2 1 9 3", cleaned[1]["text"])
+        self.assertIn("interstate 95 near exit 12", cleaned[4]["text"])
+        self.assertEqual(len(spans), 1)
+
+    def test_the_span_covers_the_moment_it_was_said(self):
+        from claims.redact import redact_turns
+
+        _, spans = redact_turns(self.turns(), known_last4="2887")
+        self.assertLess(spans[0]["start"], 40.0)
+        self.assertGreater(spans[0]["end"], 40.0)
+
+    def test_ingest_never_stores_the_digits(self):
+        conversation = Conversation.objects.create(
+            session_id="sess_red", policyholder=self.holder, verified=True
+        )
+        self.client.post(
+            reverse("conversation-ingest"),
+            data=json.dumps(
+                {
+                    "session_id": "sess_red",
+                    "turns": self.turns(),
+                    "tool_calls": [
+                        {
+                            "name": "verify_policyholder",
+                            "arguments": {"policy_number": "PV482193", "phone_last4": "2887"},
+                        }
+                    ],
+                }
+            ),
+            content_type="application/json",
+        )
+        conversation.refresh_from_db()
+        blob = json.dumps(conversation.turns) + json.dumps(conversation.tool_calls)
+        self.assertNotIn("2887", blob)
+        self.assertNotIn("2 8 8 7", blob)
+        self.assertEqual(len(conversation.redactions), 1)
+
+    def test_a_tool_call_arriving_unmasked_is_masked(self):
+        from claims.redact import redact_tool_calls
+
+        out = redact_tool_calls(
+            [{"name": "verify_policyholder", "arguments": {"phone_last4": "2887"}}]
+        )
+        self.assertEqual(out[0]["arguments"]["phone_last4"], "••••")
+
+    def test_the_recording_is_blanked_on_the_caller_channel_only(self):
+        import array
+        import io
+        import wave
+
+        from claims.redact import blank_spans
+
+        rate = 24000
+        seconds = 6
+        tone = array.array("h", [12000] * (rate * seconds * 2))  # both channels loud
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as sink:
+            sink.setnchannels(2)
+            sink.setsampwidth(2)
+            sink.setframerate(rate)
+            sink.writeframes(tone.tobytes())
+
+        out = blank_spans(buffer.getvalue(), [{"start": 2.0, "end": 4.0}])
+        with wave.open(io.BytesIO(out), "rb") as source:
+            frames = array.array("h", source.readframes(source.getnframes()))
+        left, right = frames[0::2], frames[1::2]
+
+        inside = slice(int(2.2 * rate), int(3.8 * rate))
+        self.assertEqual(max(abs(v) for v in left[inside]), 0)
+        # Ivy's side is untouched: you can still hear her ask the question.
+        self.assertEqual(max(abs(v) for v in right[inside]), 12000)
+        # And the rest of the caller's channel survives.
+        self.assertEqual(max(abs(v) for v in left[int(4.5 * rate) :]), 12000)
+
+    def test_blanking_is_a_no_op_without_spans(self):
+        from claims.redact import blank_spans
+
+        self.assertEqual(blank_spans(b"not a wav", []), b"not a wav")

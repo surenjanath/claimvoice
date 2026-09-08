@@ -125,6 +125,39 @@ they happen. A phone call has no browser, so its record is built from its tool
 calls, and `manage.py sync_calls` tops it up with duration and close reason from
 the sessions API.
 
+### The digits are never kept
+
+Ivy asks for the last four digits of the phone number on the policy, and the
+caller says them out loud. That answer is the secret the whole identity check
+rests on, so a stored transcript or recording is the key sitting next to the
+lock — enough to call back tomorrow as them.
+
+The tool arguments were masked from the start. The spoken answer was not: it sat
+in `turns` as text and stayed audible in every WAV. Both are removed now, on the
+way in.
+
+- **Transcript.** Only a caller turn that answers a question about the digits is
+  touched, and only the digits inside it. The policy number survives — it is an
+  identifier the agent reads back anyway, not a secret — and so does "interstate
+  95 near exit 12", so the transcript still reads as a conversation and still
+  shows whether Ivy asked the question at all.
+- **Audio.** Masking the text records the window it was said in, and the
+  recording is blanked across that window **on the caller's channel only**. Ivy's
+  side is left intact, so you can still hear her ask — which is the part worth
+  reviewing. Stereo earns its keep twice.
+
+```
+redacted window 37.0s - 43.8s
+  caller channel   0        <- the spoken digits
+  Ivy channel      19040    <- her question, kept
+  caller elsewhere 26058    <- rest of the call untouched
+```
+
+`manage.py redact_calls [--dry-run]` sweeps anything recorded before this, and
+covers the case where audio arrived before its transcript did, so the windows
+were not yet known. It rewrites in place and keeps no copy, because a copy of
+the thing you just removed is not a redaction.
+
 ### Which call does a webhook belong to?
 
 AssemblyAI posts the tool webhooks itself and passes no session id, so the

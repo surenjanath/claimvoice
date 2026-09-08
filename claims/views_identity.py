@@ -18,7 +18,10 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 
+from django.core.files.base import ContentFile
+
 from .agent_api import AgentApiError, api
+from .redact import blank_spans, redact_tool_calls, redact_turns
 from .models import Conversation, Policyholder, VerificationAttempt
 
 log = logging.getLogger("claims")
@@ -245,10 +248,22 @@ def conversation_ingest(request):
 
     turns = payload.get("turns")
     if isinstance(turns, list):
-        conversation.turns = turns[:400]
+        # The caller speaks the verification digits out loud, so they arrive in
+        # the transcript. They are the secret the identity check rests on and
+        # never get stored: masked here, and the windows they were spoken in
+        # are kept so the recording can be blanked to match.
+        known = (
+            conversation.policyholder.phone_last4
+            if conversation.policyholder_id and conversation.policyholder
+            else ""
+        )
+        cleaned, spans = redact_turns(turns[:400], known_last4=known)
+        conversation.turns = cleaned
+        if spans:
+            conversation.redactions = spans
     tool_calls = payload.get("tool_calls")
     if isinstance(tool_calls, list):
-        conversation.tool_calls = tool_calls[:50]
+        conversation.tool_calls = redact_tool_calls(tool_calls[:50])
     if payload.get("ended"):
         conversation.ended_at = timezone.now()
         conversation.close_reason = str(payload.get("close_reason") or "")[:64]
@@ -358,21 +373,36 @@ def conversation_recording(request, pk):
             status=413,
         )
 
+    # Blank the windows where the caller read out their verification digits.
+    # The transcript post lands before this one, so the spans are already known;
+    # if it has not arrived yet the audio is stored unredacted and the
+    # `redact_calls` command sweeps it up.
+    raw = upload.read()
+    upload.seek(0)
+    cleaned = blank_spans(raw, conversation.redactions or [])
+    stored = ContentFile(cleaned)
+
     # A re-upload replaces the old file rather than leaving it orphaned.
     if conversation.recording:
         conversation.recording.delete(save=False)
     conversation.recording.save(
         f"call-{conversation.id}-{conversation.started_at:%Y%m%d-%H%M%S}.wav",
-        upload,
+        stored,
         save=False,
     )
-    conversation.recording_bytes = upload.size
+    conversation.recording_bytes = stored.size
     conversation.save(update_fields=["recording", "recording_bytes"])
-    log.info("Recording stored for call %s (%s bytes)", conversation.id, upload.size)
+    log.info(
+        "Recording stored for call %s (%s bytes, %s redacted windows)",
+        conversation.id,
+        stored.size,
+        len(conversation.redactions or []),
+    )
     return JsonResponse(
         {
             "ok": True,
-            "bytes": upload.size,
+            "bytes": stored.size,
+            "redacted_windows": len(conversation.redactions or []),
             "url": conversation.as_dict()["recording_url"],
         }
     )

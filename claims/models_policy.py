@@ -189,6 +189,15 @@ class Conversation(models.Model):
     # the left, Ivy on the right, so you can hear who talked over whom.
     recording = models.FileField(upload_to="recordings/", blank=True, null=True)
     recording_bytes = models.PositiveIntegerField(default=0)
+    # Windows of caller audio that carried the verification digits, so the
+    # recording can be blanked at the same places the transcript was.
+    #
+    # db_default as well as default: migrations run during the build on Render,
+    # while the previous release is still serving. For that window the database
+    # has the column and the running code does not, and an INSERT that omits it
+    # fails on a NOT NULL with no database-level default — which is every tool
+    # call in flight during a deploy.
+    redactions = models.JSONField(default=list, db_default=[], blank=True)
 
     started_at = models.DateTimeField(default=timezone.now, db_index=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -242,6 +251,7 @@ class Conversation(models.Model):
                 reverse("conversation-recording", args=[self.id]) if self.recording else None
             ),
             "recording_bytes": self.recording_bytes,
+            "redaction_count": len(self.redactions or []),
             "tool_count": len(self.tool_calls or []),
             "summary": self.summary_line(),
             "claim_id": claim.id if claim else None,
