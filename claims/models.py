@@ -1,10 +1,13 @@
 """The system of record: one row per First Notice of Loss."""
 
+import secrets
+
 from django.db import models
 from django.utils import timezone
 
 from .models_policy import (  # noqa: F401  (re-exported: claims.models is the import surface)
     Conversation,
+    Dispatch,
     Policyholder,
     VerificationAttempt,
 )
@@ -83,6 +86,21 @@ class Claim(models.Model):
     source = models.CharField(max_length=32, default="voice_agent")
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
 
+    # The share link is public — it goes out by text to a driver at the
+    # roadside, who cannot be asked to log in. So the identifier in it has to
+    # be the secret: a sequential id makes every other claim readable by
+    # counting. Generated on save, never reused.
+    share_token = models.CharField(max_length=43, unique=True, blank=True, db_index=True)
+
+    lat = models.FloatField(null=True, blank=True)
+    lng = models.FloatField(null=True, blank=True)
+    needs_human = models.BooleanField(default=False)
+    handoff_reason = models.CharField(max_length=64, blank=True)
+    sms_status = models.CharField(max_length=16, blank=True)
+    sms_sent_at = models.DateTimeField(null=True, blank=True)
+    email_status = models.CharField(max_length=16, blank=True)
+    assigned_to = models.CharField(max_length=80, blank=True)
+
     class Meta:
         ordering = ["-created_at", "-id"]
         indexes = [models.Index(fields=["-created_at"])]
@@ -127,7 +145,83 @@ class Claim(models.Model):
             "policyholder_name": self.policyholder.full_name if self.policyholder else "",
             "conversation_id": self.conversation_id,
             "verified": bool(self.conversation and self.conversation.verified),
+            "dispatches": [d.as_dict() for d in self.dispatches.all()],
+            "lat": self.lat,
+            "lng": self.lng,
+            "needs_human": self.needs_human,
+            "handoff_reason": self.handoff_reason,
+            "flags": self.flags(),
+            "photo_count": len(self.photos.all()),
+            "share_path": self.share_path,
+            "sms_status": self.sms_status,
+            "sms_sent_at": self.sms_sent_at.isoformat() if self.sms_sent_at else None,
+            "email_status": self.email_status,
+            "notified": self.sms_status == "sent" or self.email_status == "sent",
+            "assigned_to": self.assigned_to,
+            "notes": [n.as_dict() for n in self.notes.all()[:12]],
+            "coverage": self.policyholder.coverage if self.policyholder_id and self.policyholder else "",
+            "coverage_label": (
+                self.policyholder.get_coverage_display()
+                if self.policyholder_id and self.policyholder
+                else ""
+            ),
+            "deductible": self.policyholder.deductible if self.policyholder_id and self.policyholder else None,
+            "roadside_assistance": (
+                self.policyholder.roadside_assistance
+                if self.policyholder_id and self.policyholder
+                else None
+            ),
+            "rental_cover": (
+                self.policyholder.rental_cover if self.policyholder_id and self.policyholder else None
+            ),
+            "policy_status": self.policyholder.status if self.policyholder_id and self.policyholder else "",
+            "vehicle_on_file": self.policyholder.vehicle_line() if self.policyholder_id and self.policyholder else "",
+            "vehicle_mismatch": self.vehicle_mismatch(),
         }
+
+    def vehicle_mismatch(self):
+        said = (self.vehicle or "").lower()
+        if not said or not self.policyholder_id or not self.policyholder:
+            return False
+        book = " ".join(
+            " ".join(str(part.get(key) or "") for key in ("year", "colour", "make", "model", "plate"))
+            for part in (self.policyholder.vehicles or [])
+        ).lower()
+        if not book.strip():
+            return False
+        tokens = [token for token in said.replace(",", " ").split() if len(token) > 2]
+        return bool(tokens) and not any(token in book for token in tokens)
+
+    def flags(self):
+        marks = []
+        verified = bool(self.conversation and self.conversation.verified)
+        if self.assigned_to:
+            marks.append("owned")
+        if self.needs_human:
+            marks.append("handoff")
+        if not verified:
+            marks.append("unverified")
+        if self.policyholder_id and self.policyholder and self.policyholder.status != "active":
+            marks.append("lapsed")
+        if self.risk_score >= 75 and not verified:
+            marks.append("fraud watch")
+        if self.vehicle_mismatch():
+            marks.append("vehicle mismatch")
+        return marks
+
+    @property
+    def reference(self):
+        return f"CV-{self.id:05d}"
+
+    @property
+    def share_path(self):
+        """Where the caller's copy of this claim lives."""
+        return f"/c/{self.share_token}/" if self.share_token else ""
+
+    def save(self, *args, **kwargs):
+        if not self.share_token:
+            self.share_token = secrets.token_urlsafe(24)
+        super().save(*args, **kwargs)
 
 
 class AgentProfile(models.Model):
@@ -185,6 +279,9 @@ class AgentProfile(models.Model):
 
     agent_id = models.CharField(max_length=64, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
+    # SHA-256 of to_agent_config() at last successful publish. Compared on
+    # the settings page so "saved but not published" is a real state, not a guess.
+    published_digest = models.CharField(max_length=64, blank=True)
 
     class Meta:
         verbose_name = "agent profile"
@@ -245,6 +342,8 @@ class AgentProfile(models.Model):
     TOOL_ENDPOINTS = {
         "verify_policyholder": "/api/verify/",
         "log_claim": "/api/log-claim/",
+        "end_call": "/api/end-call/",
+        "request_human": "/api/request-human/",
     }
 
     @property
@@ -285,8 +384,13 @@ class AgentProfile(models.Model):
             url = self.tool_urls.get(tool["name"])
             if not url:
                 continue
-            tool["execution_mode"] = self.execution_mode
-            tool["timeout_seconds"] = self.timeout_seconds
+            # The settings page describes one knob — "while log_claim runs" —
+            # so it steers that tool only. The others keep the mode their
+            # schema chose: end_call must not hold the line silent while it
+            # runs, since holding is the opposite of hanging up.
+            if tool["name"] == "log_claim":
+                tool["execution_mode"] = self.execution_mode
+                tool["timeout_seconds"] = self.timeout_seconds
             tool["http"] = {"url": url, "http_method": "POST"}
             if django_settings.CLAIM_WEBHOOK_SECRET:
                 tool["http"]["headers"] = [
@@ -313,4 +417,94 @@ class AgentProfile(models.Model):
             },
             "output": {"voice": self.voice_id, "volume": self.volume},
             "tools": tools,
+        }
+
+    def config_digest(self):
+        """Stable fingerprint of the payload we last sent, or would send now."""
+        import hashlib
+        import json
+
+        blob = json.dumps(self.to_agent_config(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode()).hexdigest()
+
+    def unpublished_changes(self):
+        """True when a prior publish exists and the saved row no longer matches it."""
+        if not self.published_digest:
+            return False
+        return self.config_digest() != self.published_digest
+
+    def snapshot_revision(self):
+        """Keep what we just published so a later draft can be rolled back."""
+        return AgentRevision.objects.create(
+            profile=self,
+            system_prompt=self.system_prompt,
+            greeting=self.greeting,
+            voice_id=self.voice_id,
+            digest=self.published_digest or self.config_digest(),
+        )
+
+
+class ClaimNote(models.Model):
+    """A line on the claim — dispatcher judgement or a message from the caller."""
+
+    claim = models.ForeignKey(Claim, related_name="notes", on_delete=models.CASCADE)
+    body = models.CharField(max_length=400)
+    author = models.CharField(max_length=32, default="dispatcher")
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "body": self.body,
+            "author": self.author,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+class ClaimPhoto(models.Model):
+    """A picture the caller or dispatcher attached to a filed claim."""
+
+    claim = models.ForeignKey(Claim, related_name="photos", on_delete=models.CASCADE)
+    image = models.FileField(upload_to="claim-photos/")
+    caption = models.CharField(max_length=120, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            # Scoped to the claim's token: a photo id on its own is not a key.
+            "url": f"/api/share/{self.claim.share_token}/photos/{self.id}/",
+            "caption": self.caption,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+class AgentRevision(models.Model):
+    """One published prompt, so Settings can restore yesterday's Ivy."""
+
+    profile = models.ForeignKey(
+        AgentProfile, related_name="revisions", on_delete=models.CASCADE
+    )
+    system_prompt = models.TextField()
+    greeting = models.CharField(max_length=500, blank=True)
+    voice_id = models.CharField(max_length=32, blank=True)
+    digest = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "voice_id": self.voice_id,
+            "digest": self.digest,
+            "created_at": self.created_at.isoformat(),
+            "prompt_preview": (self.system_prompt or "")[:160],
         }

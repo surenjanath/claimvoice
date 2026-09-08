@@ -1,0 +1,114 @@
+{% extends "claims/base.html" %}
+{% load static %}
+
+{% block title %}{{ reference }} · ClaimVoice{% endblock %}
+
+{% block main %}
+<div class="board share-page">
+  <div class="board-head">
+    <div>
+      <h1>{{ reference }}</h1>
+      <p>
+        {{ claim.get_incident_type_display }} at {{ claim.location }}.
+        <span id="share-live">{% if claim.needs_human %}An adjuster has been requested.{% endif %}{% if claim.assigned_to %} {{ claim.assigned_to }} is on it.{% endif %}</span>
+        <span id="share-notify" class="mono" hidden></span>
+      </p>
+    </div>
+    <div class="right actions">
+      <span class="pill {% if claim.status == 'closed' %}ok{% else %}warn{% endif %}">{{ claim.get_status_display }}</span>
+      {% if desk_ok %}<a class="tool-btn" href="{% url 'dashboard' %}#claim-{{ claim.id }}">Open on board</a>{% endif %}
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="card stat"><div class="k mono">Risk</div><div class="v">{{ claim.risk_score }}</div></div>
+    <div class="card stat"><div class="k mono">Drivable</div><div class="v">{% if claim.is_drivable %}Yes{% else %}No{% endif %}</div></div>
+    <div class="card stat"><div class="k mono">Tow</div><div class="v">{% if claim.tow_required %}Dispatched{% else %}Not needed{% endif %}</div></div>
+    <div class="card stat"><div class="k mono">Photos</div><div class="v" id="photo-count">{{ photos|length }}</div></div>
+  </div>
+
+  <div class="chart-grid">
+    <section class="card panel">
+      <h2>What was filed</h2>
+      <div class="detail">
+        <div><span class="k">Policy</span><span>{{ claim.policy_number }}</span></div>
+        <div><span class="k">Caller</span><span>{{ claim.policyholder.full_name|default:claim.caller_name|default:"—" }}</span></div>
+        <div><span class="k">Vehicle</span><span>{{ claim.vehicle|default:"—" }}</span></div>
+        <div><span class="k">Location</span><span>{{ claim.location }}</span></div>
+        {% if claim.description %}<div><span class="k">Note</span><span>{{ claim.description }}</span></div>{% endif %}
+        <div><span class="k">Why this score</span><span id="share-risk">{{ claim.risk_factors|join:" · "|default:"—" }}</span></div>
+        {% if claim.policyholder %}
+          <div><span class="k">Cover</span><span>{{ claim.policyholder.get_coverage_display }}{% if not claim.policyholder.roadside_assistance %} · no roadside{% endif %}</span></div>
+        {% endif %}
+      </div>
+      {% if claim.lat and claim.lng %}
+        <div id="share-map" class="share-map" data-lat="{{ claim.lat }}" data-lng="{{ claim.lng }}" data-label="{{ claim.location }}"></div>
+      {% endif %}
+
+      <h2 style="margin-top:22px">On the way</h2>
+      <p class="panel-note">This updates as the dispatcher moves the tow.</p>
+      <div id="live-dispatches" class="live-dispatches" data-live-url="{% url 'claim-live' claim.share_token %}">
+        {% for row in claim.dispatches.all %}
+          <div class="live-item">
+            <div class="d-head">
+              <span class="d-kind">{{ row.get_kind_display }}</span>
+              <span class="tag">{{ row.get_status_display }}</span>
+            </div>
+            <div class="d-meta">
+              {% if row.vendor %}{{ row.vendor }} · {% endif %}
+              {% if row.eta_minutes != None %}ETA {{ row.eta_minutes }} min{% endif %}
+            </div>
+          </div>
+        {% empty %}
+          <p class="empty">Nothing dispatched yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="card panel">
+      <h2>Add a photo</h2>
+      <p class="panel-note">Damage, the scene, or the plate. This is the same link in the text.</p>
+      <form class="photo-form" id="photo-form" action="{% url 'claim-photo-upload' claim.share_token %}" method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        <label class="file-pick" id="file-pick">
+          <input type="file" name="photo" accept="image/*" required>
+          <span class="file-name">Choose a photo</span>
+        </label>
+        <input type="text" name="caption" placeholder="Optional caption" maxlength="120">
+        <button class="btn small" type="submit">Upload</button>
+        <p class="form-error" id="photo-error" hidden></p>
+      </form>
+      <div class="photo-grid" id="photos">
+        {% for photo in photos %}
+          <figure>
+            <img src="{% url 'claim-photo-file' claim.share_token photo.id %}" alt="{{ photo.caption|default:'Claim photo' }}">
+            {% if photo.caption %}<figcaption>{{ photo.caption }}</figcaption>{% endif %}
+          </figure>
+        {% empty %}
+          <p class="empty" id="photos-empty">No photos yet.</p>
+        {% endfor %}
+      </div>
+
+      <h2 style="margin-top:28px">Message the adjuster</h2>
+      <p class="panel-note">A short note lands on the dispatcher board.</p>
+      <form class="note-form" id="note-form" action="{% url 'claim-note-public' claim.share_token %}" method="post">
+        {% csrf_token %}
+        <input type="hidden" name="author" value="caller">
+        <input type="text" name="body" placeholder="I’m at the scene…" maxlength="400" required>
+        <button class="btn small quiet" type="submit">Send</button>
+      </form>
+      <div class="note-list" id="notes">
+        {% for note in claim.notes.all %}
+          <div class="note-item"><b>{{ note.author }}</b> {{ note.body }}</div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="{% static 'claims/js/share.js' %}?v=eta"></script>
+{% endblock %}

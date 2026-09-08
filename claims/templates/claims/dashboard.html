@@ -11,22 +11,33 @@
       <h1>Dispatcher board</h1>
       <p>First notices of loss, scored and triaged the moment Ivy files them.</p>
     </div>
-    <div class="right">
+    <div class="right tools">
+      <button type="button" class="tool-btn" id="inject-demo">Inject demo</button>
+      <button type="button" class="tool-btn" id="export-csv">Export CSV</button>
+      <button type="button" class="tool-btn on" id="sound-toggle" aria-pressed="true">Sound on</button>
       <span class="livedot mono" id="live-label">Live</span>
-      <span class="mono" style="color:var(--faint)" id="last-update">—</span>
+      <span class="mono clock" id="last-update">—</span>
     </div>
   </div>
 
-  <div class="stats">
+  <div class="banner handoff-banner" id="handoff-banner" hidden>
+    <span id="handoff-text">A call is waiting for a person.</span>
+    <button class="tool-btn" type="button" id="handoff-jump">Show handoffs</button>
+  </div>
+
+  <div class="stats five">
     <div class="card stat"><div class="k mono">Claims today</div><div class="v" id="stat-total">0</div></div>
     <div class="card stat crit"><div class="k mono">Critical risk</div><div class="v" id="stat-critical">0</div></div>
     <div class="card stat"><div class="k mono">Tows dispatched</div><div class="v" id="stat-tows">0</div></div>
+    <div class="card stat"><div class="k mono">Handoffs</div><div class="v" id="stat-handoffs">0</div></div>
     <div class="card stat"><div class="k mono">Average risk</div><div class="v" id="stat-avg">0</div></div>
   </div>
 
   <div class="tabs-row">
     <button class="tab-btn on" data-view="claims">Claims</button>
     <button class="tab-btn" data-view="conversations">Conversations</button>
+    <button class="tab-btn" data-view="dispatches">Dispatches</button>
+    <button class="tab-btn" data-view="map">Map</button>
     <input type="search" id="search" placeholder="Search policy, name, location…" autocomplete="off">
   </div>
 
@@ -37,7 +48,13 @@
       <button class="chip" data-filter="dispatched">Dispatched</button>
       <button class="chip" data-filter="closed">Closed</button>
       <button class="chip" data-filter="critical">Critical</button>
+      <button class="chip" data-filter="handoff">Handoff</button>
+      <button class="chip" data-filter="lapsed">Lapsed</button>
+      <button class="chip" data-filter="fraud">Fraud watch</button>
       <button class="chip" data-filter="unverified">Unverified</button>
+      <button class="chip" data-filter="mine">Assigned</button>
+      <button class="chip" data-filter="open">Unassigned</button>
+      <button class="chip" data-filter="waiting">Waiting</button>
       <span class="count" id="row-count"></span>
     </div>
 
@@ -68,6 +85,8 @@
       <button class="chip on" data-cfilter="all">All calls</button>
       <button class="chip" data-cfilter="verified">Verified</button>
       <button class="chip" data-cfilter="unverified">Unverified</button>
+      <button class="chip" data-cfilter="handoff">Handoff</button>
+      <button class="chip" data-cfilter="live">Live</button>
       <span class="count" id="conv-count"></span>
     </div>
 
@@ -91,6 +110,59 @@
       <p>No calls recorded yet. Every call is transcribed here for tuning the prompt.</p>
     </div>
   </section>
+
+  <section id="view-dispatches" hidden>
+    <div class="filters">
+      <button class="chip on" data-dfilter="open">Open</button>
+      <button class="chip" data-dfilter="all">All</button>
+      <button class="chip" data-dfilter="tow">Tows</button>
+      <button class="chip" data-dfilter="adjuster">Adjusters</button>
+      <button class="chip" data-dfilter="investigator">Investigators</button>
+      <button class="chip" data-dfilter="ambulance">Medical</button>
+      <button class="chip" data-dfilter="rental">Rentals</button>
+      <button type="button" class="tool-btn" id="arrive-due">Mark due arrived</button>
+      <span class="count" id="dispatch-count"></span>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="width:110px">Kind</th>
+          <th style="width:96px">Claim</th>
+          <th style="width:160px">Who</th>
+          <th>Location</th>
+          <th style="width:160px">Vendor</th>
+          <th style="width:72px">ETA</th>
+          <th style="width:220px">Status</th>
+          <th style="width:82px">When</th>
+        </tr>
+      </thead>
+      <tbody id="dispatch-rows"></tbody>
+    </table>
+
+    <div class="board-empty" id="dispatch-empty">
+      <p>Nothing on the road. A tow lands here the moment Ivy files an undrivable claim.</p>
+    </div>
+  </section>
+
+  <section id="view-map" hidden>
+    <div class="filters">
+      <span class="map-legend">
+        <span class="leg p-critical">Critical</span>
+        <span class="leg p-high">High</span>
+        <span class="leg p-medium">Medium</span>
+        <span class="leg p-low">Low</span>
+        <span class="leg p-tow">Open tow</span>
+      </span>
+      <button type="button" class="chip" id="map-unpinned">Unpinned</button>
+      <span class="count" id="map-count"></span>
+    </div>
+    <div id="incident-map" class="incident-map"></div>
+    <div class="board-empty" id="map-empty">
+      <p>No pinned incidents yet. Locations geocode when a claim files.</p>
+    </div>
+    <div class="unpinned" id="unpinned-list" hidden></div>
+  </section>
 </div>
 
 <aside class="drawer" id="drawer" hidden>
@@ -110,8 +182,23 @@
     statusUrl: "/api/claims/__ID__/status/",
     conversationsUrl: "{% url 'conversation-feed' %}",
     conversationDetailUrl: "/api/conversations/__ID__/",
+    createDispatchUrl: "/api/claims/__ID__/dispatch/",
+    dispatchUrl: "{% url 'dispatch-feed' %}",
+    dispatchStatusUrl: "/api/dispatches/__ID__/status/",
+    handoffUrl: "/api/claims/__ID__/handoff/",
+    notifyUrl: "/api/claims/__ID__/notify/",
+    assignUrl: "/api/claims/__ID__/assign/",
+    noteUrl: "/api/claims/__ID__/notes/",
+    photoUploadUrl: "/api/claims/__ID__/photos/upload/",
+    photosUrl: "/api/claims/__ID__/photos/",
+    vendorsUrl: "{% url 'vendor-feed' %}",
+    demoUrl: "{% url 'demo-claim' %}",
+    deskName: "{{ desk_name|default:'Dispatcher'|escapejs }}",
     csrfToken: "{{ csrf_token }}"
   };
 </script>
-<script src="{% static 'claims/js/dashboard.js' %}"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<div class="claim-toast" id="claim-toast" hidden></div>
+<script src="{% static 'claims/js/dashboard.js' %}?v=align2"></script>
 {% endblock %}

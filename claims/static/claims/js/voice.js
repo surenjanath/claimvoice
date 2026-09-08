@@ -152,9 +152,13 @@
   let ws, captureCtx, playbackCtx, playback, mic, callStart, timer;
   // Set on session.ready; audio frames before it are dropped.
   let ready = false;
+  // Set when Ivy calls end_call: hang up once her closing line has played.
+  let hangingUp = false;
   // The call record. AssemblyAI keeps session metadata but not the words, so
   // the page is the only place the transcript exists — it posts it as it goes.
   let sessionId = null;
+  let conversationId = null;
+  const lastCall = { claimId: null, reference: '', recordingUrl: '', sharePath: '', notified: false };
   let recorder = null;
   const record = { turns: [], toolCalls: [] };
   let recordDirty = false;
@@ -174,7 +178,7 @@
     if (!sessionId || (!recordDirty && !final)) return;
     recordDirty = false;
     try {
-      await fetch(CFG.conversationUrl, {
+      const res = await fetch(CFG.conversationUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -188,6 +192,10 @@
           duration_seconds: callStart ? (Date.now() - callStart) / 1000 : 0,
         }),
       });
+      if (res.ok) {
+        const body = await res.json();
+        if (body.id) conversationId = body.id;
+      }
     } catch (error) {
       // A dropped transcript post must not take the call down with it.
       recordDirty = true;
@@ -258,6 +266,13 @@
   }
 
   async function start() {
+    hideRecap();
+    lastCall.claimId = null;
+    lastCall.reference = '';
+    lastCall.recordingUrl = '';
+    lastCall.sharePath = '';
+    lastCall.notified = false;
+    conversationId = null;
     $('call-btn').disabled = true;
     $('mic').disabled = true;
     setStatus('connecting');
@@ -391,6 +406,13 @@
           recorder && recorder.truncateAgent(recorder.position);
         }
         logEvent('down', msg.type, msg.status);
+        // The goodbye has been generated; give the speaker time to actually
+        // play it out before cutting the line.
+        if (hangingUp) {
+          hangingUp = false;
+          setStatus('speaking', 'saying goodbye');
+          setTimeout(stop, agentAudioRemainingMs() + 400);
+        }
         break;
 
       // text is the full transcript so far, so it replaces.
@@ -471,11 +493,33 @@
       fillClaim(args);
       showTab('claim');
       awaitClaim(args.policy_number);
+      return;
+    }
+
+    if (msg.name === 'request_human') {
+      addLine('system', `Adjuster requested · ${(args.reason || 'caller request').replace(/_/g, ' ')}`);
+      return;
+    }
+
+    if (msg.name === 'end_call') {
+      // Ivy is done. Let the closing line finish playing, then hang up — the
+      // server cuts the session too, but a beat later and only as a backstop.
+      hangingUp = true;
+      addLine('system', `Ivy ended the call · ${args.reason || 'finished'}`);
     }
   }
 
   const relativeNow = () =>
     callStart ? Number(((Date.now() - callStart) / 1000).toFixed(1)) : 0;
+
+  // reply.done fires when the audio has been sent, not when it has been heard.
+  // The recorder knows how far ahead the agent channel runs, which is exactly
+  // how much is still queued to play.
+  function agentAudioRemainingMs() {
+    if (!recorder) return 1500;
+    const ahead = (recorder.rightLen - recorder.position) / WIRE_RATE;
+    return Math.min(20000, Math.max(600, Math.round(ahead * 1000)));
+  }
 
   // Verification happens server side, so read the outcome back rather than
   // guessing it from the arguments.
@@ -487,6 +531,7 @@
         const res = await fetch(`${CFG.sessionUrl}?session=${encodeURIComponent(sessionId || '')}`);
         if (res.ok) {
           const data = await res.json();
+          showVerifyTries(data);
           if (data.verified && data.policyholder) {
             showIdentity(data.policyholder);
             addLine('system', `Verified: ${data.policyholder.full_name}`);
@@ -501,6 +546,28 @@
     setTimeout(look, 800);
   }
 
+  function showVerifyTries(data) {
+    const el = $('verify-tries');
+    if (!el) return;
+    if (data.verified) {
+      el.hidden = true;
+      return;
+    }
+    if (data.locked) {
+      el.hidden = false;
+      el.textContent = 'Verification locked. Ivy will give the callback number.';
+      el.classList.add('locked');
+      return;
+    }
+    if (typeof data.attempts_remaining === 'number') {
+      el.hidden = false;
+      el.classList.remove('locked');
+      el.textContent = data.attempts_remaining === 1
+        ? '1 attempt remaining'
+        : `${data.attempts_remaining} attempts remaining`;
+    }
+  }
+
   function showIdentity(holder) {
     const card = $('identity');
     if (!card) return;
@@ -513,6 +580,7 @@
       (holder.roadside_assistance ? ' · roadside' : ' · no roadside');
     $('id-status').textContent = holder.status_label;
     $('id-status').className = 'pill ' + (holder.status === 'active' ? 'ok' : 'warn');
+    paintIntake();
   }
 
   function send(message) {
@@ -537,8 +605,13 @@
           ? claims.find((c) => c.policy_number === String(policyNumber).toUpperCase())
           : claims[0];
         if (match) {
-          fillClaim({ ...match, claim_reference: 'CV-' + String(match.id).padStart(5, '0') });
-          addLine('system', `Filed CV-${String(match.id).padStart(5, '0')} · risk ${match.risk_score} (${match.priority})`);
+          const reference = 'CV-' + String(match.id).padStart(5, '0');
+          lastCall.claimId = match.id;
+          lastCall.reference = reference;
+          lastCall.sharePath = match.share_path || '';
+          lastCall.notified = Boolean(match.notified);
+          fillClaim({ ...match, claim_reference: reference });
+          addLine('system', `Filed ${reference} · risk ${match.risk_score} (${match.priority})`);
           return;
         }
       } catch (error) {
@@ -564,6 +637,40 @@
       row.querySelector('.v').textContent = format ? format(data[field]) : String(data[field]);
       row.classList.add('filled');
     }
+    paintIntake();
+  }
+
+  const INTAKE = [
+    { step: 'verify', field: null },
+    { step: 'incident', field: 'incident_type' },
+    { step: 'location', field: 'location' },
+    { step: 'drivable', field: 'is_drivable' },
+    { step: 'filed', field: 'claim_reference' },
+  ];
+
+  function paintIntake() {
+    const identityOn = $('identity') && !$('identity').hidden;
+    const filled = (field) => {
+      const row = document.querySelector(`#fnol .fnol-row[data-field="${field}"]`);
+      return row && row.classList.contains('filled');
+    };
+    const core = ['policy_number', 'incident_type', 'location', 'is_drivable'];
+    const have = core.filter(filled).length;
+    const progress = $('claim-progress');
+    if (progress) {
+      if (filled('claim_reference')) progress.textContent = 'Claim filed';
+      else if (have === 0 && !identityOn) progress.textContent = '0 of 4 fields · waiting to start';
+      else progress.textContent = `${have} of ${core.length} required fields`;
+    }
+    let current = true;
+    for (const item of INTAKE) {
+      const el = document.querySelector(`#intake [data-step="${item.step}"]`);
+      if (!el) continue;
+      const done = item.step === 'verify' ? identityOn : filled(item.field);
+      el.classList.toggle('done', done);
+      el.classList.toggle('on', !done && current);
+      if (!done) current = false;
+    }
   }
 
   function stop() {
@@ -586,9 +693,15 @@
   }
 
   async function finishRecording() {
-    if (!recorder || !sessionId) return;
+    if (!recorder || !sessionId) {
+      if (sessionId || lastCall.claimId || conversationId) showRecap();
+      return;
+    }
     const seconds = recorder.seconds;
-    if (seconds < 1) return;
+    if (seconds < 1) {
+      showRecap();
+      return;
+    }
     const mine = recorder;
     recorder = null;
     addLine('system', `Uploading ${Math.round(seconds)}s of audio…`);
@@ -599,9 +712,60 @@
     addLine(
       'system',
       result
-        ? `Recording saved (${(result.bytes / 1048576).toFixed(1)} MB) — playable on the dispatcher board.`
+        ? `Recording saved (${(result.bytes / 1048576).toFixed(1)} MB) — playable below and on the board.`
         : 'Recording could not be uploaded.'
     );
+    if (result && result.url) lastCall.recordingUrl = result.url;
+    else if (conversationId) lastCall.recordingUrl = `/api/conversations/${conversationId}/recording/`;
+    showRecap();
+  }
+
+  function hideRecap() {
+    const card = $('call-recap');
+    if (card) card.hidden = true;
+    const audio = $('recap-audio');
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute('src');
+    }
+  }
+
+  function showRecap() {
+    const card = $('call-recap');
+    if (!card) return;
+    const empty = $('transcript-empty');
+    if (empty) empty.hidden = false;
+    card.hidden = false;
+    const filed = Boolean(lastCall.reference);
+    $('recap-title').textContent = filed ? lastCall.reference + ' filed' : 'Call ended';
+    $('recap-body').textContent = filed
+      ? (lastCall.notified
+        ? 'Ivy filed the claim and sent the share link. Open it on the board or send photos from the phone.'
+        : 'Ivy filed the claim. Open it on the dispatcher board, or play the tape back here.')
+      : 'Nothing was filed on that call. The transcript is still on the board.';
+    const share = $('recap-share');
+    if (share) {
+      if (lastCall.sharePath) {
+        share.hidden = false;
+        share.href = lastCall.sharePath;
+      } else {
+        share.hidden = true;
+      }
+    }
+    const board = $('recap-board');
+    if (board) {
+      if (conversationId) board.href = `${CFG.dashboardUrl}#call-${conversationId}`;
+      else if (lastCall.claimId) board.href = `${CFG.dashboardUrl}#claim-${lastCall.claimId}`;
+      else board.href = CFG.dashboardUrl;
+    }
+    const player = $('recap-player');
+    const audio = $('recap-audio');
+    if (player && audio && lastCall.recordingUrl) {
+      player.hidden = false;
+      audio.src = lastCall.recordingUrl;
+    } else if (player) {
+      player.hidden = true;
+    }
   }
 
   function reset() {
@@ -619,11 +783,23 @@
     $('mic').disabled = false;
     $('call-btn').textContent = 'Start call';
     $('call-btn').classList.remove('end');
+    const label = $('orb-label');
+    if (label) label.textContent = 'Press start when you are ready';
   }
 
   function setStatus(state, detail) {
     $('status').className = 'status ' + state;
-    $('status-text').textContent = detail || state;
+    const idleLabel = state === 'idle' ? 'Ready' : state;
+    $('status-text').textContent = detail || idleLabel;
+    const label = $('orb-label');
+    if (label) {
+      label.textContent = {
+        idle: 'Press start when you are ready',
+        connecting: 'Connecting to Ivy…',
+        listening: 'Listening',
+        speaking: 'Ivy is speaking',
+      }[state] || (detail || state);
+    }
     document.body.classList.toggle('listening', state === 'listening');
     document.body.classList.toggle('speaking', state === 'speaking');
   }
@@ -769,4 +945,55 @@
     if (COALESCE.has(type)) open.set(key, { row, count: 1, detail, painted: 0 });
     if (atBottom) scroll(pane);
   }
+
+  document.querySelectorAll('[data-copy]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(btn.dataset.copy); } catch { /* ignore */ }
+      const hint = btn.querySelector('.copy-hint') || btn;
+      const prior = hint.textContent;
+      hint.textContent = 'Copied';
+      setTimeout(() => { hint.textContent = prior === 'Copied' ? 'Copy' : prior; }, 1400);
+    });
+  });
+
+  paintIntake();
+
+  const dismiss = $('recap-dismiss');
+  if (dismiss) dismiss.onclick = hideRecap;
+
+  function applyPolicyHash() {
+    const code = (location.hash || '').replace(/^#/, '').toUpperCase();
+    if (!/^PV[A-Z0-9]+$/.test(code) || !CFG.policyholdersUrl) return;
+    fetch(`${CFG.policyholdersUrl}?policy=${encodeURIComponent(code)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        const holder = (data.policyholders || []).find((h) => h.policy_number === code);
+        if (!holder) return;
+        const policyBtn = document.querySelector('[data-copy]#demo-policy')
+          || $('demo-policy')?.closest('[data-copy]');
+        const lastBtn = $('demo-last4')?.closest('[data-copy]');
+        if ($('demo-policy')) $('demo-policy').textContent = holder.policy_number;
+        if ($('demo-last4')) $('demo-last4').textContent = holder.phone_last4 || '';
+        if (policyBtn) policyBtn.dataset.copy = holder.policy_number;
+        if (lastBtn) lastBtn.dataset.copy = holder.phone_last4 || '';
+        const who = $('demo-who');
+        if (who) {
+          who.innerHTML =
+            `You are <b>${escapeHtml(holder.full_name)}</b>${holder.vehicle_line ? `, ${escapeHtml(holder.vehicle_line)}` : ''}.
+            More testers on the <a href="/directory/">directory</a>.`;
+        }
+        const kicker = document.querySelector('.start-kicker');
+        if (kicker) kicker.textContent = 'Calling as ' + holder.first_name;
+      })
+      .catch(() => { /* directory is optional for the call itself */ });
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+    );
+  }
+
+  applyPolicyHash();
+  window.addEventListener('hashchange', applyPolicyHash);
 })();

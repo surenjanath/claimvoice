@@ -9,7 +9,8 @@
   <div class="board-head">
     <div>
       <h1>Insights</h1>
-      <p>How the agent is doing, and which question it keeps getting wrong.</p>
+      <p>How the agent is doing, which question it keeps getting wrong, and which calls to listen to.</p>
+      <p class="window-meta mono" id="window-meta"></p>
     </div>
     <div class="right">
       <div class="range" id="range">
@@ -18,21 +19,90 @@
         <button class="chip on" data-days="30">30d</button>
         <button class="chip" data-days="365">All</button>
       </div>
-      <a class="btn small" href="{% url 'export-calls' %}" download>Export JSONL</a>
+      <a class="tool-btn" id="export" href="{% url 'export-calls' %}?days=30" download>Export JSONL</a>
     </div>
   </div>
 
   <div class="stats" id="kpis">
-    <div class="card stat"><div class="k mono">Calls answered</div><div class="v" id="kpi-calls">—</div></div>
-    <div class="card stat"><div class="k mono">Identity verified</div><div class="v" id="kpi-verified">—</div><div class="sub" id="kpi-verified-sub"></div></div>
-    <div class="card stat"><div class="k mono">Ended in a claim</div><div class="v" id="kpi-complete">—</div><div class="sub" id="kpi-complete-sub"></div></div>
-    <div class="card stat"><div class="k mono">Median call</div><div class="v" id="kpi-median">—</div></div>
+    <div class="card stat">
+      <div class="k mono">Calls answered</div>
+      <div class="v" id="kpi-calls">—</div>
+      <div class="sub" id="kpi-calls-sub"></div>
+    </div>
+    <div class="card stat">
+      <div class="k mono">Identity verified</div>
+      <div class="v" id="kpi-verified">—</div>
+      <div class="sub" id="kpi-verified-sub"></div>
+    </div>
+    <div class="card stat">
+      <div class="k mono">Ended in a claim</div>
+      <div class="v" id="kpi-complete">—</div>
+      <div class="sub" id="kpi-complete-sub"></div>
+    </div>
+    <div class="card stat">
+      <div class="k mono">Median call</div>
+      <div class="v" id="kpi-median">—</div>
+      <div class="sub" id="kpi-median-sub"></div>
+    </div>
   </div>
+
+  <div class="stats secondary" id="kpis-more">
+    <div class="card stat">
+      <div class="k mono">90th percentile</div>
+      <div class="v" id="kpi-p90">—</div>
+      <div class="sub">The long calls — usually the messy ones</div>
+    </div>
+    <div class="card stat">
+      <div class="k mono">Verified, no claim</div>
+      <div class="v" id="kpi-dropoff">—</div>
+      <div class="sub">They proved who they were, then left</div>
+    </div>
+    <div class="card stat">
+      <div class="k mono">Tows required</div>
+      <div class="v" id="kpi-tows">—</div>
+      <div class="sub" id="kpi-tows-sub"></div>
+    </div>
+    <div class="card stat">
+      <div class="k mono">Recordings kept</div>
+      <div class="v" id="kpi-recordings">—</div>
+      <div class="sub">Audio you can play back from the board</div>
+    </div>
+  </div>
+
+  <section class="card panel wide">
+    <h2>Calls, verified callers and claims over time</h2>
+    <p class="panel-note">One point per day. Hover or use the arrow keys for the exact figures.</p>
+    <div class="chart" id="over-time"></div>
+  </section>
 
   <div class="chart-grid">
     <section class="card panel">
+      <h2>When the phone rings</h2>
+      <p class="panel-note">Calls by hour of day, in your timezone.</p>
+      <div class="chart short" id="by-hour"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>Which day of the week</h2>
+      <p class="panel-note">Monday through Sunday, same timezone as the hour chart.</p>
+      <div class="bars" id="weekdays"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>How long calls last</h2>
+      <p class="panel-note">Finished calls only. The last bucket is where Ivy is stuck.</p>
+      <div class="bars" id="durations"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>Why calls ended</h2>
+      <p class="panel-note">The reason Ivy gave when she hung up.</p>
+      <div class="bars" id="end-reasons"></div>
+    </section>
+
+    <section class="card panel">
       <h2>Where calls end up</h2>
-      <p class="panel-note">Each stage is a subset of the one above it.</p>
+      <p class="panel-note">Each stage is a subset of the one above it. The share is of the stage above.</p>
       <div class="bars" id="funnel"></div>
     </section>
 
@@ -49,9 +119,40 @@
     </section>
 
     <section class="card panel">
+      <h2>Where it happened</h2>
+      <p class="panel-note">The eight locations Ivy heard most often in this window.</p>
+      <div class="bars" id="locations"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>Can they drive away?</h2>
+      <p class="panel-note">Drivability is the last question before filing — it decides the tow.</p>
+      <div class="bars" id="drivable"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>Injuries mentioned</h2>
+      <p class="panel-note">Only counted when the caller said it. Unknown means Ivy did not ask.</p>
+      <div class="bars" id="injuries"></div>
+    </section>
+
+    <section class="card panel">
       <h2>How calls arrived</h2>
       <p class="panel-note">Phone calls carry no transcript — only tool calls.</p>
       <div class="bars" id="channels"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>Claim status</h2>
+      <p class="panel-note">What the dispatcher has done with the filings so far.</p>
+      <div class="bars" id="claim-status"></div>
+    </section>
+
+    <section class="card panel">
+      <h2>What was sent to the scene</h2>
+      <p class="panel-note">Automatic tows plus anything a dispatcher raised by hand.</p>
+      <div class="bars" id="dispatch-kinds"></div>
+      <div class="quality-row two" id="dispatch-summary"></div>
     </section>
   </div>
 
@@ -63,14 +164,41 @@
       skips most.
     </p>
     <div class="bars" id="rejections"></div>
-    <div class="quality-row" id="quality"></div>
+    <div class="quality-row six" id="quality"></div>
+  </section>
+
+  <section class="card panel wide">
+    <h2>Calls worth a look</h2>
+    <p class="panel-note">
+      Long calls, failed identity, a second filing, or a claim from someone we
+      never verified. Open one on the dispatcher board.
+    </p>
+    <table class="table notable">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Caller</th>
+          <th>Channel</th>
+          <th>Length</th>
+          <th>Ended</th>
+          <th>Why it is here</th>
+        </tr>
+      </thead>
+      <tbody id="notable"></tbody>
+    </table>
+    <p class="empty" id="notable-empty" hidden>Nothing unusual in this window.</p>
   </section>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  window.CLAIMVOICE = { metricsUrl: "{% url 'metrics' %}" };
+  window.CLAIMVOICE = {
+    metricsUrl: "{% url 'metrics' %}",
+    exportUrl: "{% url 'export-calls' %}",
+    dashboardUrl: "{% url 'dashboard' %}",
+  };
 </script>
-<script src="{% static 'claims/js/insights.js' %}"></script>
+<script src="{% static 'claims/js/charts.js' %}"></script>
+<script src="{% static 'claims/js/insights.js' %}?v=prompt"></script>
 {% endblock %}

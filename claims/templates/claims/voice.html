@@ -3,15 +3,25 @@
 
 {% block title %}Talk to Ivy · ClaimVoice{% endblock %}
 {% block nav_voice %}on{% endblock %}
+{% block body_class %}voice-page{% endblock %}
 
 {% block main %}
 <div class="stage">
   <section class="call">
     <div class="call-head">
-      <span class="mono">Live intake</span>
+      <div class="call-who">
+        <span class="ivy-mark" aria-hidden="true"></span>
+        <div>
+          <span class="call-who-name">Ivy</span>
+          <span class="call-who-meta mono">{{ voice_label }} · {{ profile.name }}</span>
+        </div>
+      </div>
       <span class="spacer"></span>
-      <span class="status idle" id="status"><span id="status-text">idle</span></span>
-      <span class="meter"><span id="elapsed">0:00</span><span id="cost">$0.000</span></span>
+      <span class="status idle" id="status"><span id="status-text">Ready</span></span>
+      <span class="meter">
+        <span><em>Time</em><b id="elapsed">0:00</b></span>
+        <span><em>Est.</em><b id="cost">$0.000</b></span>
+      </span>
     </div>
 
     <div class="orb-wrap">
@@ -19,44 +29,86 @@
       <span class="ring two"></span>
       <div class="orb" id="orb"></div>
     </div>
+    <p class="orb-label" id="orb-label">Press start when you are ready</p>
 
     <div class="transcript" id="transcript">
-      <div class="empty" id="transcript-empty">
+      <div class="empty start-card" id="transcript-empty">
         {% if not has_key %}
-          No ASSEMBLYAI_API_KEY found. Add it to <code>.env</code> and restart the server.
+          <h2>Missing API key</h2>
+          <p>No <code>ASSEMBLYAI_API_KEY</code> in <code>.env</code>. Add one and restart the server.</p>
         {% elif not agent_id %}
-          No agent published yet. Run <code>python manage.py publish_agent</code>, then reload.
+          <h2>Agent not published</h2>
+          <p>Run <code>python manage.py publish_agent</code>, or open <a href="{% url 'settings' %}">Agent</a> and publish, then reload.</p>
         {% else %}
-          Press start. Ivy verifies who you are, then takes the claim.<br><br>
-          Try <b>PV482193</b> with last four <b>2887</b> — you are Dana Whitfield,
-          driving a silver 2019 Toyota Camry. More on the
-          <a href="{% url 'directory' %}" style="color:var(--accent)">directory</a>.
+          <p class="start-kicker mono">Demo caller</p>
+          <h2>File a first notice of loss</h2>
+          <p>Ivy checks you are safe, verifies the policy, then takes the claim. Speak naturally — one answer at a time.</p>
+          <div class="demo-creds">
+            <button type="button" class="demo-chip" data-copy="PV482193">
+              <span class="k mono">Policy</span>
+              <b id="demo-policy">PV482193</b>
+              <span class="copy-hint">Copy</span>
+            </button>
+            <button type="button" class="demo-chip" data-copy="2887">
+              <span class="k mono">Last four</span>
+              <b id="demo-last4">2887</b>
+              <span class="copy-hint">Copy</span>
+            </button>
+          </div>
+          <p class="demo-who" id="demo-who">
+            You are <b>Dana Whitfield</b>, silver 2019 Toyota Camry.
+            More testers on the <a href="{% url 'directory' %}">directory</a>.
+          </p>
         {% endif %}
+      </div>
+      <div class="empty start-card recap" id="call-recap" hidden>
+        <p class="start-kicker mono">Last call</p>
+        <h2 id="recap-title">Call ended</h2>
+        <p id="recap-body">Nothing was filed on that call.</p>
+        <div class="recap-actions actions">
+          <a class="tool-btn" id="recap-board" href="{% url 'dashboard' %}">Open on the board</a>
+          <a class="tool-btn" id="recap-share" hidden href="#">Photos and status</a>
+          <button type="button" class="tool-btn" id="recap-dismiss">Dismiss</button>
+        </div>
+        <div class="player" id="recap-player" hidden>
+          <audio id="recap-audio" controls preload="metadata"></audio>
+        </div>
       </div>
     </div>
 
     <div class="controls">
       <select id="mic" aria-label="Microphone"><option value="">Default microphone</option></select>
+      <p class="controls-hint" id="controls-hint">Mic stays in the browser. The API key never does.</p>
       <button class="btn" id="call-btn" {% if not agent_id or not has_key %}disabled{% endif %}>Start call</button>
     </div>
   </section>
 
   <aside class="rail">
     <div class="rail-head">
-      <button class="ghost on" id="tab-claim">Claim</button>
-      <button class="ghost" id="tab-events">Events</button>
-      <button class="ghost" id="tab-agent">Agent</button>
+      <button class="tab-btn on" id="tab-claim">Claim</button>
+      <button class="tab-btn" id="tab-events">Events</button>
+      <button class="tab-btn" id="tab-agent">Agent</button>
     </div>
 
     <div class="rail-body" id="pane-claim">
       {% if not tool_live %}
       <div class="banner">
-        <code>log_claim</code> is not published: AssemblyAI stores HTTP tools only, so it
-        needs a public URL to post to. Set one under
-        <a href="{% url 'settings' %}" style="color:inherit;text-decoration:underline">Agent</a>
+        <code>log_claim</code> is not published. Set a public URL under
+        <a href="{% url 'settings' %}">Agent</a>
         and publish, or Ivy will talk but never file anything.
       </div>
       {% endif %}
+
+      <p class="rail-kicker mono">Intake</p>
+      <ol class="intake" id="intake">
+        <li data-step="verify">Verify the caller</li>
+        <li data-step="incident">What happened</li>
+        <li data-step="location">Where it happened</li>
+        <li data-step="drivable">Is the car driveable</li>
+        <li data-step="filed">Claim filed</li>
+      </ol>
+      <p class="intake-meta mono" id="claim-progress">0 of 4 fields · waiting to start</p>
+
       <div class="identity card" id="identity" hidden>
         <div class="id-head">
           <span class="id-name" id="id-name">—</span>
@@ -66,6 +118,7 @@
         <div class="id-row"><span class="k mono">Vehicle</span><span id="id-vehicle">—</span></div>
         <div class="id-row"><span class="k mono">Cover</span><span id="id-cover">—</span></div>
       </div>
+      <p class="verify-tries" id="verify-tries" hidden></p>
 
       <div class="fnol" id="fnol">
         <div class="fnol-row" data-field="policy_number"><span class="k">Policy</span><span class="v">—</span></div>
@@ -79,10 +132,9 @@
         <div class="fnol-row" data-field="risk_score"><span class="k">Risk score</span><span class="v">—</span></div>
         <div class="fnol-row" data-field="claim_reference"><span class="k">Reference</span><span class="v">—</span></div>
       </div>
-      <p class="empty" style="margin-top:18px">
-        These fill in the moment Ivy fires <code>log_claim</code>. AssemblyAI posts the
-        claim to Django itself, and the row lands on the
-        <a href="{% url 'dashboard' %}" style="color:var(--accent)">dispatcher board</a> as she reads the reference back.
+      <p class="empty rail-note">
+        Fields fill the moment Ivy fires <code>log_claim</code>. The row lands on the
+        <a href="{% url 'dashboard' %}">dispatcher board</a> as she reads the reference back.
       </p>
     </div>
 
@@ -92,6 +144,11 @@
     </div>
 
     <div class="rail-body" id="pane-agent" hidden>
+      <div class="agent-summary">
+        <div><span class="k mono">Name</span><span>{{ profile.name }}</span></div>
+        <div><span class="k mono">Voice</span><span>{{ voice_label }}</span></div>
+        <div><span class="k mono">Agent ID</span><span class="mono">{{ profile.agent_id|default:"—" }}</span></div>
+      </div>
       <div id="agent-json">Loading the published agent…</div>
     </div>
   </aside>
@@ -108,9 +165,11 @@
     feedUrl: "{% url 'claim-feed' %}",
     conversationUrl: "{% url 'conversation-ingest' %}",
     sessionUrl: "{% url 'conversation-session' %}",
-    recordingUrl: "{% url 'recording-upload' %}"
+    recordingUrl: "{% url 'recording-upload' %}",
+    dashboardUrl: "{% url 'dashboard' %}",
+    policyholdersUrl: "{% url 'policyholder-feed' %}"
   };
 </script>
 <script src="{% static 'claims/js/recorder.js' %}"></script>
-<script src="{% static 'claims/js/voice.js' %}"></script>
+<script src="{% static 'claims/js/voice.js' %}?v=more"></script>
 {% endblock %}

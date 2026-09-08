@@ -1,24 +1,15 @@
 /* The insights page.
  *
- * Every chart here is a labelled horizontal bar, because every question on this
- * page is "compare these magnitudes" and the categories have long names. Values
- * are direct-labelled on every row, so the charts double as the table view and
- * nothing depends on colour alone.
- *
- * Palettes are the validated ones: an ordinal blue ramp for the ordered scales
- * (funnel stages, risk bands) and the first three categorical slots where the
- * categories are identities rather than an order.
+ * Every comparison chart here is a labelled horizontal bar: the categories
+ * have long names, and the value sits on the row so nothing depends on colour
+ * alone. The line chart is the one exception — it is time, not categories.
  */
 (() => {
   const $ = (id) => document.getElementById(id);
   const CFG = window.CLAIMVOICE;
 
-  // Ordinal ramp, light -> dark. Validated on this surface: monotone lightness,
-  // visible step gaps, light end clears 2:1.
   const ORDINAL = ['#cde2fb', '#86b6ef', '#3987e5', '#1c5cab'];
-  // Categorical slots 1-3, validated all-pairs on this surface.
   const CATEGORICAL = ['#3987e5', '#d95926', '#199e70'];
-  // One hue: these bars are a single series ranked by size.
   const SINGLE = '#3987e5';
 
   const escape = (value) =>
@@ -33,8 +24,13 @@
       : `${whole}s`;
   };
 
-  /* rows: [{label, count, colour, note}] — scaled against the largest row so
-   * the bars compare against each other rather than against the container. */
+  const signed = (value, suffix = '') => {
+    if (!value) return `same as last window`;
+    const prefix = value > 0 ? '+' : '';
+    return `${prefix}${value}${suffix} vs last window`;
+  };
+
+  /* rows: [{label, count, colour, note}] — scaled against the largest row. */
   function drawBars(node, rows, options = {}) {
     const max = Math.max(1, ...rows.map((row) => row.count));
     const total = options.shareOf ?? rows.reduce((sum, row) => sum + row.count, 0);
@@ -46,11 +42,11 @@
     }
 
     for (const row of rows) {
-      const share = total ? Math.round((100 * row.count) / total) : 0;
+      const share = row.share != null
+        ? row.share
+        : (total ? Math.round((100 * row.count) / total) : 0);
       const el = document.createElement('div');
       el.className = 'bar-row';
-      // The tooltip carries the exact figures; the row itself carries the label
-      // and value, so the hover is an addition rather than the only way to read it.
       el.title = `${row.label}: ${row.count}${total ? ` of ${total} (${share}%)` : ''}`;
       el.innerHTML = `
         <span class="bar-label">${escape(row.label)}</span>
@@ -58,19 +54,41 @@
           <span class="bar-fill" style="width:${(100 * row.count) / max}%;background:${row.colour}"></span>
         </span>
         <span class="bar-value">${escape(row.count)}</span>
-        <span class="bar-share">${total && row.count ? share + '%' : ''}</span>`;
+        <span class="bar-share">${row.note || (total && row.count ? share + '%' : '')}</span>`;
       node.append(el);
     }
   }
 
   function paint(data) {
     const head = data.headline;
+    const deltas = data.deltas || {};
     $('kpi-calls').textContent = head.calls;
+    $('kpi-calls-sub').textContent = signed(deltas.calls);
     $('kpi-verified').textContent = head.verified_rate + '%';
-    $('kpi-verified-sub').textContent = `${data.funnel[1].count} of ${head.calls} calls`;
+    $('kpi-verified-sub').textContent = `${data.funnel[1].count} of ${head.calls} calls · ${signed(deltas.verified_rate, 'pp')}`;
     $('kpi-complete').textContent = head.completion_rate + '%';
-    $('kpi-complete-sub').textContent = `${head.claims} claims filed`;
+    $('kpi-complete-sub').textContent = `${head.claims} claims filed · ${signed(deltas.completion_rate, 'pp')}`;
     $('kpi-median').textContent = clock(head.median_seconds);
+    $('kpi-median-sub').textContent = signed(deltas.median_seconds, 's');
+    $('kpi-p90').textContent = clock(head.p90_seconds);
+    $('kpi-dropoff').textContent = head.dropoff_after_verify;
+    $('kpi-tows').textContent = head.tows;
+    $('kpi-tows-sub').textContent = head.claims
+      ? `${Math.round((100 * head.tows) / head.claims)}% of claims`
+      : 'No claims yet';
+    $('kpi-recordings').textContent = head.recordings;
+
+    const windowLabel = data.window_days === 1
+      ? 'Last 24 hours'
+      : data.window_days >= 365
+        ? 'All recorded calls'
+        : `Last ${data.window_days} days`;
+    const generated = data.generated_at
+      ? new Date(data.generated_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+      : '';
+    $('window-meta').textContent = generated
+      ? `${windowLabel} · compared with the ${data.window_days === 365 ? 'prior stretch' : 'previous window'} · updated ${generated}`
+      : windowLabel;
 
     drawBars(
       $('funnel'),
@@ -78,6 +96,7 @@
         label: stage.label,
         count: stage.count,
         colour: ORDINAL[index] || ORDINAL[ORDINAL.length - 1],
+        note: stage.from_previous == null ? '' : `${stage.from_previous}% of previous`,
       })),
       { shareOf: data.funnel[0].count }
     );
@@ -109,6 +128,111 @@
       }))
     );
 
+    drawBars(
+      $('weekdays'),
+      data.weekdays.map((row, index) => ({
+        label: row.label,
+        count: row.count,
+        colour: ORDINAL[Math.min(index, ORDINAL.length - 1)],
+      }))
+    );
+
+    drawBars(
+      $('durations'),
+      data.durations.map((row, index) => ({
+        label: row.label,
+        count: row.count,
+        colour: ORDINAL[index] || ORDINAL[ORDINAL.length - 1],
+      }))
+    );
+
+    drawBars(
+      $('locations'),
+      data.locations.map((row) => ({ label: row.label, count: row.count, colour: SINGLE }))
+    );
+
+    drawBars(
+      $('drivable'),
+      data.drivable.map((row, index) => ({
+        label: row.label,
+        count: row.count,
+        colour: CATEGORICAL[index % CATEGORICAL.length],
+      }))
+    );
+
+    drawBars(
+      $('injuries'),
+      data.injuries.map((row, index) => ({
+        label: row.label,
+        count: row.count,
+        colour: CATEGORICAL[index % CATEGORICAL.length],
+      }))
+    );
+
+    drawBars(
+      $('claim-status'),
+      data.claim_status.map((row, index) => ({
+        label: row.label,
+        count: row.count,
+        colour: ORDINAL[index] || ORDINAL[ORDINAL.length - 1],
+      }))
+    );
+
+    const days = data.timeseries.map((row) => {
+      const date = new Date(row.date + 'T00:00:00');
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    });
+    Charts.line($('over-time'), [
+      {
+        name: 'Calls answered',
+        colour: CATEGORICAL[0],
+        points: data.timeseries.map((row, i) => ({ x: i, y: row.calls, label: days[i] })),
+      },
+      {
+        name: 'Identity verified',
+        colour: CATEGORICAL[2],
+        points: data.timeseries.map((row, i) => ({ x: i, y: row.verified, label: days[i] })),
+      },
+      {
+        name: 'Claims filed',
+        colour: CATEGORICAL[1],
+        points: data.timeseries.map((row, i) => ({ x: i, y: row.claims, label: days[i] })),
+      },
+    ], { label: 'Calls, verified callers and claims per day', height: 220 });
+
+    Charts.columns(
+      $('by-hour'),
+      data.hours.map((row) => ({
+        y: row.count,
+        label: `${String(row.hour).padStart(2, '0')}:00`,
+        tick: row.hour % 6 === 0 ? String(row.hour).padStart(2, '0') : '',
+      })),
+      { colour: SINGLE }
+    );
+
+    drawBars(
+      $('end-reasons'),
+      data.end_reasons.map((row) => ({ label: row.label, count: row.count, colour: SINGLE }))
+    );
+
+    drawBars(
+      $('dispatch-kinds'),
+      data.dispatch.by_kind.map((row, index) => ({
+        label: row.label,
+        count: row.count,
+        colour: CATEGORICAL[index % CATEGORICAL.length],
+      }))
+    );
+    $('dispatch-summary').innerHTML = [
+      [data.dispatch.open, 'still on their way'],
+      [data.dispatch.manual, 'raised by a dispatcher'],
+    ]
+      .map(
+        ([value, label]) =>
+          `<div><span class="q-value">${escape(value)}</span><span class="q-label">${escape(label)}</span></div>`
+      )
+      .join('');
+
     const quality = data.quality;
     drawBars(
       $('rejections'),
@@ -119,24 +243,61 @@
       })),
       { shareOf: 0 }
     );
+    const rej = $('rejections');
+    if (rej && !document.getElementById('rej-fix')) {
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.id = 'rej-fix';
+      hint.innerHTML = '<a href="/settings/#prompt">Open the prompt to fix these</a>';
+      rej.after(hint);
+    }
 
     $('quality').innerHTML = [
       [`${quality.rejection_rate}%`, 'of calls needed a second filing attempt'],
       [`${quality.verification_pass_rate}%`, `of ${quality.verification_checks} identity checks passed`],
+      [quality.verification_failed, 'identity checks failed'],
       [quality.average_risk, 'average risk score'],
       [quality.unverified_claims, 'claims filed by an unverified caller'],
+      [`${quality.agent_ended_rate}%`, 'of calls Ivy ended herself'],
+      [quality.median_turns, 'median turns in a call'],
     ]
       .map(
         ([value, label]) =>
           `<div><span class="q-value">${escape(value)}</span><span class="q-label">${escape(label)}</span></div>`
       )
       .join('');
+
+    const body = $('notable');
+    const empty = $('notable-empty');
+    body.replaceChildren();
+    if (!data.notable.length) {
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    for (const row of data.notable) {
+      const when = new Date(row.when);
+      const tr = document.createElement('tr');
+      tr.className = 'clickable';
+      tr.innerHTML = `
+        <td class="when">${escape(when.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</td>
+        <td>${escape(row.who)}</td>
+        <td>${escape(row.channel)}</td>
+        <td class="mono">${escape(clock(row.duration))}</td>
+        <td>${escape(row.end_reason)}</td>
+        <td>${row.flags.map((flag) => `<span class="tag">${escape(flag)}</span>`).join(' ')}</td>`;
+      tr.addEventListener('click', () => {
+        window.location.href = `${CFG.dashboardUrl}#call-${row.id}`;
+      });
+      body.append(tr);
+    }
   }
 
   async function load(days) {
     try {
       const res = await fetch(`${CFG.metricsUrl}?days=${days}`);
       paint(await res.json());
+      if ($('export')) $('export').href = `${CFG.exportUrl}?days=${days}`;
     } catch (error) {
       $('funnel').innerHTML = '<p class="empty">Could not load metrics.</p>';
     }
@@ -150,7 +311,6 @@
   });
 
   load(30);
-  // A board left open during a demo should keep up with the calls landing.
   setInterval(() => {
     const active = document.querySelector('#range .chip.on');
     load(active ? active.dataset.days : 30);

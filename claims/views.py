@@ -8,7 +8,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.db.models import Avg, Count, Q
 from django.http import HttpResponseNotAllowed, JsonResponse
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -16,6 +16,8 @@ from django.views.decorators.http import require_GET, require_POST
 
 from .agent_api import AgentApiError, api, mint_token, publish_agent, redacted_agent
 from .forms import AgentProfileForm
+from .prompt_presets import PRESETS
+from .webhook_status import probe_webhook
 from .models import (
     AgentProfile,
     Claim,
@@ -25,6 +27,9 @@ from .models import (
     Policyholder,
     Severity,
 )
+from .geo import pin_claim
+from .notify import notify_claim
+from .views_dispatch import raise_automatic_dispatch
 from .views_identity import _conversation
 from .risk import score_claim
 
@@ -244,6 +249,7 @@ def voice(request):
             # Without a webhook URL the tool is not published at all, so the
             # page says so rather than letting someone talk into a dead end.
             "tool_live": bool(profile.webhook_url),
+            "voice_label": profile.get_voice_id_display(),
         },
     )
 
@@ -360,7 +366,7 @@ def log_claim(request):
         # Demo fixtures are not filings. Without this, seeding the board and
         # then making a call means the caller is read back a reference from a
         # claim that was never theirs, and no claim is filed at all.
-        .exclude(source="seed")
+        .exclude(source__in=["seed", "demo"])
         .order_by("-created_at")
         .first()
     )
@@ -375,6 +381,7 @@ def log_claim(request):
                 "risk_score": recent.risk_score,
                 "priority": recent.priority,
                 "tow_required": recent.tow_required,
+                "notified": False,
                 "claim": recent.as_dict(),
             }
         )
@@ -420,6 +427,15 @@ def log_claim(request):
         {"name": "log_claim", "arguments": unwrap(payload), "claim_id": claim.id}
     ]
     conversation.save(update_fields=["tool_calls"])
+    if conversation.needs_human:
+        claim.needs_human = True
+        claim.handoff_reason = conversation.handoff_reason
+        claim.save(update_fields=["needs_human", "handoff_reason"])
+    pin_claim(claim)
+
+    # The tow promised in the message becomes a row someone can actually work.
+    eta = 18 + (claim.id * 7) % 18
+    raise_automatic_dispatch(claim, eta)
 
     message = dispatch_message(claim)
     if holder and claim.tow_required and not holder.roadside_assistance:
@@ -427,6 +443,17 @@ def log_claim(request):
             f"Claim CV-{claim.id:05d} logged. This policy does not include roadside "
             f"assistance, so a tow to {claim.location} can be arranged but it will be "
             "charged to the policyholder."
+        )
+    notice = notify_claim(claim)
+    if notice.get("sent"):
+        message = (
+            message.rstrip(".")
+            + ". I've texted the number on the policy with this reference."
+        )
+    elif (notice.get("email") or {}).get("sent"):
+        message = (
+            message.rstrip(".")
+            + ". I've emailed the address on the policy with this reference."
         )
     log.info("Claim %s logged, risk %s", claim.id, claim.risk_score)
     return JsonResponse(
@@ -437,6 +464,7 @@ def log_claim(request):
             "risk_score": claim.risk_score,
             "priority": claim.priority,
             "tow_required": claim.tow_required,
+            "notified": bool(notice.get("sent") or (notice.get("email") or {}).get("sent")),
             "claim": claim.as_dict(),
         }
     )
@@ -449,14 +477,22 @@ def claim_feed(request):
     `?since=<id>` returns only claims newer than that id, so the common poll is
     an empty list and the page only re-renders when something arrives.
     """
-    queryset = Claim.objects.all()
+    queryset = Claim.objects.select_related("policyholder", "conversation").prefetch_related(
+        "dispatches", "photos", "notes"
+    )
     stats = queryset.aggregate(
         total=Count("id"),
+        today=Count("id", filter=Q(created_at__gte=timezone.now() - timedelta(hours=24))),
         critical=Count("id", filter=Q(risk_score__gte=75)),
         tows=Count("id", filter=Q(tow_required=True)),
+        handoffs=Count("id", filter=Q(needs_human=True)),
         avg_risk=Avg("risk_score"),
     )
     stats["avg_risk"] = round(stats["avg_risk"] or 0)
+
+    policy = (request.GET.get("policy") or "").strip().upper()
+    if policy:
+        queryset = queryset.filter(policy_number__iexact=policy)
 
     since = request.GET.get("since")
     incremental = False
@@ -491,6 +527,94 @@ def claim_status(request, pk):
     return JsonResponse({"ok": True, "claim": Claim.objects.get(pk=pk).as_dict()})
 
 
+@require_POST
+def claim_handoff(request, pk):
+    claim = get_object_or_404(Claim, pk=pk)
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        payload = {}
+    reason = str(payload.get("reason") or "dispatcher").strip()[:64]
+    claim.needs_human = True
+    claim.handoff_reason = reason
+    claim.save(update_fields=["needs_human", "handoff_reason"])
+    if claim.conversation_id:
+        claim.conversation.needs_human = True
+        claim.conversation.handoff_reason = reason
+        claim.conversation.save(update_fields=["needs_human", "handoff_reason"])
+    return JsonResponse({"ok": True, "claim": claim.as_dict()})
+
+
+@require_POST
+def claim_assign(request, pk):
+    claim = get_object_or_404(Claim, pk=pk)
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        payload = {}
+    if payload.get("release"):
+        claim.assigned_to = ""
+    else:
+        claim.assigned_to = str(payload.get("assigned_to") or "Dispatcher").strip()[:80]
+    claim.save(update_fields=["assigned_to"])
+    return JsonResponse({"ok": True, "claim": claim.as_dict()})
+
+
+@csrf_exempt
+def claim_note_public(request, token):
+    """A note added by the caller, from the link they were texted."""
+    claim = get_object_or_404(Claim, share_token=str(token or "").strip())
+    return _add_note(request, claim, forced_author="caller")
+
+
+def claim_note(request, pk):
+    """A note added at the desk, where the claim id is known and allowed."""
+    claim = get_object_or_404(Claim, pk=pk)
+    return _add_note(request, claim)
+
+
+def _add_note(request, claim, forced_author=None):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        payload = request.POST
+    body = str(payload.get("body") or "").strip()[:400]
+    if not body:
+        return JsonResponse({"error": "write a note"}, status=400)
+    # A caller writing in from the public link is a caller, whatever the
+    # request claims to be.
+    author = forced_author or str(payload.get("author") or "dispatcher").strip()[:32]
+    if author not in {"dispatcher", "caller", "system"}:
+        author = "dispatcher"
+    from .models import ClaimNote
+
+    note = ClaimNote.objects.create(claim=claim, body=body, author=author)
+    accept = request.headers.get("Accept", "")
+    if "application/json" in accept:
+        return JsonResponse({"ok": True, "note": note.as_dict(), "claim": claim.as_dict()})
+    return redirect("claim-share", token=claim.share_token)
+
+
+@require_POST
+def claim_notify(request, pk):
+    claim = get_object_or_404(
+        Claim.objects.select_related("policyholder", "conversation"), pk=pk
+    )
+    notice = notify_claim(claim)
+    claim.refresh_from_db()
+    return JsonResponse(
+        {
+            "ok": True,
+            "sent": bool(notice.get("sent")),
+            "skipped": notice.get("skipped"),
+            "error": notice.get("error"),
+            "claim": claim.as_dict(),
+        }
+    )
+
+
 @require_GET
 def health(request):
     profile = AgentProfile.load()
@@ -508,6 +632,29 @@ def health(request):
 
 
 # --- settings --------------------------------------------------------------
+
+_FIELD_PANES = {
+    "name": "identity",
+    "voice_id": "identity",
+    "greeting": "identity",
+    "system_prompt": "prompt",
+    "volume": "listening",
+    "vad_threshold": "listening",
+    "min_silence": "listening",
+    "max_silence": "listening",
+    "interrupt_response": "listening",
+    "keyterms_text": "listening",
+    "public_base_url": "tool",
+    "execution_mode": "tool",
+    "timeout_seconds": "tool",
+}
+
+
+def _first_error_pane(form):
+    for name in form.errors:
+        if name in _FIELD_PANES:
+            return _FIELD_PANES[name]
+    return ""
 
 
 def agent_settings(request):
@@ -536,7 +683,9 @@ def agent_settings(request):
             else:
                 profile.agent_id = agent_id
                 profile.published_at = timezone.now()
-                profile.save(update_fields=["agent_id", "published_at"])
+                profile.published_digest = profile.config_digest()
+                profile.save(update_fields=["agent_id", "published_at", "published_digest"])
+                profile.snapshot_revision()
                 verb = "Created" if created else "Updated"
                 if profile.webhook_url:
                     messages.success(
@@ -559,6 +708,7 @@ def agent_settings(request):
                 f"{request.scheme}://{request.get_host()}"
             )
 
+    webhook = probe_webhook(profile.public_base_url, request.get_host())
     return render(
         request,
         "claims/settings.html",
@@ -567,5 +717,113 @@ def agent_settings(request):
             "profile": profile,
             "config": json.dumps(profile.to_agent_config(), indent=2),
             "has_key": bool(settings.ASSEMBLYAI_API_KEY),
+            "webhook": webhook,
+            "unpublished": profile.unpublished_changes(),
+            "presets": PRESETS,
+            "share_url": (
+                (profile.public_base_url or f"{request.scheme}://{request.get_host()}").rstrip("/")
+                + "/"
+            ),
+            "error_pane": _first_error_pane(form),
+            "revisions": profile.revisions.all()[:12],
         },
     )
+
+
+@require_POST
+def sync_calls(request):
+    """Pull AssemblyAI sessions into the conversation log from the Agent page."""
+    from .sync import sync_sessions
+
+    try:
+        result = sync_sessions(limit=50, prune=request.GET.get("prune") == "1")
+    except AgentApiError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+    return JsonResponse({"ok": True, **result})
+
+
+DEMO_SCRIPTS = (
+    {
+        "policy_number": "PV482193",
+        "incident_type": "collision",
+        "location": "I-95 northbound near exit 12",
+        "is_drivable": False,
+        "injuries_reported": False,
+        "vehicle": "silver Toyota Camry",
+        "severity": "airbags_deployed",
+        "description": "Rear-ended. Airbags deployed. The Camry is leaking.",
+        "caller_name": "Dana Whitfield",
+    },
+    {
+        "policy_number": "PV660271",
+        "incident_type": "collision",
+        "location": "Grand Avenue underpass",
+        "is_drivable": False,
+        "injuries_reported": False,
+        "vehicle": "red Jeep Wrangler",
+        "severity": "glass_or_dents",
+        "description": "Hit a barrier. Caller said it was a red Jeep.",
+        "caller_name": "Tom Alvarez",
+    },
+    {
+        "policy_number": "PV305518",
+        "incident_type": "weather",
+        "location": "Riverside Drive, Bellview",
+        "is_drivable": False,
+        "injuries_reported": True,
+        "vehicle": "white Nissan Leaf",
+        "severity": "glass_or_dents",
+        "description": "A tree came down on the Leaf. Passenger has a cut.",
+        "caller_name": "Priya Raghunathan",
+    },
+)
+
+
+@require_POST
+def demo_claim(request):
+    """File a canned FNOL so the board moves without a microphone."""
+    script = DEMO_SCRIPTS[Claim.objects.filter(source="demo").count() % len(DEMO_SCRIPTS)]
+    fields = parse_claim(script)
+    holder = Policyholder.objects.filter(policy_number=fields["policy_number"]).first()
+    if holder and not fields.get("caller_name"):
+        fields["caller_name"] = holder.full_name
+    score, factors, tow_required = score_claim(
+        incident_type=fields["incident_type"],
+        is_drivable=fields["is_drivable"],
+        location=fields["location"],
+        description=fields["description"],
+        injuries_reported=fields["injuries_reported"],
+        severity=fields["severity"],
+    )
+    conversation = Conversation.objects.create(
+        channel=Conversation.Channel.SIMULATOR,
+        verified=True,
+        policyholder=holder,
+        started_at=timezone.now(),
+        ended_at=timezone.now(),
+        duration_seconds=88,
+        end_reason="claim_filed",
+        turns=[
+            {"role": "agent", "text": "Are you somewhere safe right now?", "at": 0},
+            {"role": "user", "text": fields["description"], "at": 6},
+        ],
+        tool_calls=[{"name": "log_claim", "arguments": script}],
+    )
+    claim = Claim.objects.create(
+        **fields,
+        policyholder=holder,
+        conversation=conversation,
+        risk_score=score,
+        risk_factors=factors,
+        tow_required=tow_required,
+        status=ClaimStatus.DISPATCHED if tow_required else ClaimStatus.NEW,
+        raw_payload=script,
+        source="demo",
+    )
+    conversation.tool_calls = [
+        {"name": "log_claim", "arguments": script, "claim_id": claim.id}
+    ]
+    conversation.save(update_fields=["tool_calls"])
+    pin_claim(claim)
+    raise_automatic_dispatch(claim, 18 + (claim.id * 7) % 18)
+    return JsonResponse({"ok": True, "claim": claim.as_dict(), "reference": claim.reference})

@@ -1,9 +1,11 @@
 from django.urls import path
 
-from . import views, views_identity, views_insights
+from . import desk, views, views_dispatch, views_identity, views_insights, views_share
 
 urlpatterns = [
     path("", views.voice, name="voice"),
+    path("login/", desk.login, name="login"),
+    path("logout/", desk.logout, name="logout"),
     path("dashboard/", views.dashboard, name="dashboard"),
     path("directory/", views_identity.directory, name="directory"),
     path("insights/", views_insights.insights, name="insights"),
@@ -11,9 +13,25 @@ urlpatterns = [
     # The two tool webhooks. csrf exempt: AssemblyAI posts them, not a browser.
     path("api/verify/", views_identity.verify_policyholder, name="verify"),
     path("api/log-claim/", views.log_claim, name="log-claim"),
+    path("api/end-call/", views_identity.end_call, name="end-call"),
+    path("api/request-human/", views_identity.request_human, name="request-human"),
     # Read models for the dispatcher screens.
     path("api/claims/", views.claim_feed, name="claim-feed"),
     path("api/claims/<int:pk>/status/", views.claim_status, name="claim-status"),
+    path("api/claims/<int:pk>/handoff/", views.claim_handoff, name="claim-handoff"),
+    path("api/claims/<int:pk>/notify/", views.claim_notify, name="claim-notify"),
+    path("api/claims/<int:pk>/assign/", views.claim_assign, name="claim-assign"),
+    path("api/claims/<int:pk>/notes/", views.claim_note, name="claim-note"),
+    path("api/share/<str:token>/notes/", views.claim_note_public, name="claim-note-public"),
+    path("api/share/<str:token>/live/", views_share.claim_live, name="claim-live"),
+    path("api/share/<str:token>/photos/", views_share.claim_photos, name="claim-photos"),
+    path("api/share/<str:token>/photos/upload/", views_share.upload_claim_photo, name="claim-photo-upload"),
+    path("api/share/<str:token>/photos/<int:pk>/", views_share.claim_photo_file, name="claim-photo-file"),
+    path("api/revisions/<int:pk>/restore/", views_share.restore_revision, name="restore-revision"),
+    path("api/claims/<int:pk>/dispatch/", views_dispatch.create_dispatch, name="create-dispatch"),
+    path("api/dispatches/", views_dispatch.dispatch_feed, name="dispatch-feed"),
+    path("api/vendors/", views_dispatch.vendor_feed, name="vendor-feed"),
+    path("api/dispatches/<int:pk>/status/", views_dispatch.dispatch_status, name="dispatch-status"),
     path("api/conversations/", views_identity.conversation_feed, name="conversation-feed"),
     path("api/conversations/ingest/", views_identity.conversation_ingest, name="conversation-ingest"),
     path("api/conversations/session/", views_identity.conversation_by_session, name="conversation-session"),
@@ -23,7 +41,10 @@ urlpatterns = [
     path("api/policyholders/", views_identity.policyholder_feed, name="policyholder-feed"),
     path("api/token/", views.token, name="token"),
     path("api/agent/", views.agent, name="agent"),
+    path("api/sync-calls/", views.sync_calls, name="sync-calls"),
+    path("api/demo-claim/", views.demo_claim, name="demo-claim"),
     path("api/metrics/", views_insights.metrics, name="metrics"),
     path("api/export/calls.jsonl", views_insights.export_calls, name="export-calls"),
     path("healthz/", views.health, name="health"),
+    path("c/<str:token>/", views_share.claim_share, name="claim-share"),
 ]

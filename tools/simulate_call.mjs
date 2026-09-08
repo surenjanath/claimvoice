@@ -255,6 +255,9 @@ async function main() {
   }
 
   let pending = null
+  let agentHungUp = false
+  let hangUpAfterReply = false
+  let acknowledged = false
   // The call record, posted the same way the browser page posts one, so a
   // simulated call shows up on the board with its transcript like any other.
   let assemblySessionId = null
@@ -340,11 +343,25 @@ async function main() {
       // Answering off transcript.agent instead talks over her, and the API
       // reads that as barge-in and abandons whatever she was doing.
       case 'reply.done': {
-        // Ivy has read the reference back, so hang up rather than sit on the
-        // line racking up session minutes.
+        if (hangUpAfterReply) {
+          hangUpAfterReply = false
+          // reply.done means the audio has been sent, not heard. The agent
+          // channel runs ahead of the caller clock by exactly what is queued.
+          const queued = Math.max(800, ((recorder.rightLen - recorder.position) / WIRE_RATE) * 1000)
+          setTimeout(() => ws.readyState === 1 && ws.close(), queued + 600)
+          break
+        }
+        // The claim is filed and Ivy has read it back. A real caller says
+        // thanks, which is the turn she needs in order to close the call
+        // herself — so answer once, then wait for her to hang up.
         if (filed && !closing) {
-          closing = true
-          setTimeout(() => ws.readyState === 1 && ws.send(JSON.stringify({ type: 'session.end' })), 1200)
+          if (!acknowledged) {
+            acknowledged = true
+            const line = 'Thank you, that is everything. Goodbye.'
+            console.log(`${at()}  you   ${line}`)
+            note('caller', line)
+            say(line)
+          }
           break
         }
         if (closing || !pending) break
@@ -370,6 +387,18 @@ async function main() {
           at: Number(((Date.now() - started) / 1000).toFixed(1)),
         })
         note('tool', `${msg.name}(${JSON.stringify(shown)})`)
+        if (msg.name === 'end_call') {
+          // Ivy is hanging up, but her closing line has not been generated
+          // yet — the tool call comes first. Wait for the reply that follows,
+          // then for its audio to play, so the goodbye is not cut off.
+          console.log(`${at()}  --    Ivy ended the call: ${msg.arguments?.reason}`)
+          agentHungUp = true
+          closing = true
+          hangUpAfterReply = true
+          // If no closing line ever comes, do not sit on the line forever.
+          setTimeout(() => ws.readyState === 1 && ws.close(), 15000)
+          break
+        }
         if (msg.name !== 'log_claim') break
         sawToolCall = true
         const landed = await waitForClaim(msg.arguments?.policy_number, callOpenedAt, 8)
@@ -429,6 +458,9 @@ async function main() {
   rmSync(work, { recursive: true, force: true })
 
   console.log('')
+  if (!agentHungUp) {
+    console.log('note: Ivy never called end_call — the client had to hang up.')
+  }
   if (filed) {
     console.log(
       `filed ${claimReference} · ${filed.incident_label} · ${filed.location} · ` +

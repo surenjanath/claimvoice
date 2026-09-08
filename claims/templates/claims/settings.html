@@ -1,4 +1,5 @@
 {% extends "claims/base.html" %}
+{% load static %}
 
 {% block title %}Agent · ClaimVoice{% endblock %}
 {% block nav_settings %}on{% endblock %}
@@ -8,14 +9,25 @@
   <div class="board-head">
     <div>
       <h1>Agent configuration</h1>
-      <p>Ivy's voice, prompt and turn taking. Publishing pushes it straight to AssemblyAI.</p>
+      <p>Ivy’s voice, prompt and turn taking. Publishing pushes it to AssemblyAI.</p>
     </div>
-    <div class="right">
+    <div class="right settings-pills">
       {% if profile.agent_id %}
-        <span class="pill"><span class="dot" style="color:var(--live)"></span>Published</span>
+        <span class="pill ok"><span class="dot" style="color:var(--live)"></span>Published</span>
       {% else %}
-        <span class="pill">Not published</span>
+        <span class="pill warn">Not published</span>
       {% endif %}
+      <span class="pill warn" id="pill-unsaved" hidden>Unsaved changes</span>
+      {% if unpublished %}
+        <span class="pill warn" id="pill-draft">Saved, not published</span>
+      {% elif profile.published_digest %}
+        <span class="pill" id="pill-draft">Draft matches live</span>
+      {% elif not profile.agent_id %}
+        <span class="pill" id="pill-draft">Never published from here</span>
+      {% endif %}
+      <span class="pill {% if webhook.state == 'ok' %}ok{% elif webhook.state == 'unset' %}{% else %}warn{% endif %}" id="pill-webhook">
+        {{ webhook.label }}
+      </span>
     </div>
   </div>
 
@@ -25,98 +37,166 @@
     </div>
   {% endif %}
 
-  <div class="share card">
-    <div>
-      <div class="k mono">Share this call link</div>
-      <div class="link-row">
-        <input type="text" id="share-link" readonly value="{{ profile.public_base_url|default:request.scheme|add:'://'|add:request.get_host }}/">
-        <button type="button" class="btn small" id="copy-link">Copy</button>
-      </div>
-      <p class="hint">
-        {% if profile.public_base_url %}
-          Anyone with this link can talk to Ivy. Sessions are billed to your API key.
-        {% else %}
-          Local only so far. Set a public base URL below and this becomes a link you can send.
-        {% endif %}
-      </p>
-    </div>
-    <div class="share-meta">
-      <div><span class="k mono">Agent ID</span><span class="v mono">{{ profile.agent_id|default:"—" }}</span></div>
-      <div><span class="k mono">Webhook</span><span class="v mono">{{ profile.webhook_url|default:"not set" }}</span></div>
-      <div><span class="k mono">Published</span><span class="v mono">{{ profile.published_at|default:"never" }}</span></div>
-    </div>
-  </div>
-
-  <form method="post" class="settings-form">
+  <form method="post" class="settings-form" id="settings-form" data-error-pane="{{ error_pane }}">
     {% csrf_token %}
     {% if form.non_field_errors %}<div class="banner">{{ form.non_field_errors }}</div>{% endif %}
 
-    <section class="card block">
-      <h2>Identity</h2>
-      {% include "claims/_field.html" with field=form.name %}
-      {% include "claims/_field.html" with field=form.voice_id %}
-      {% include "claims/_field.html" with field=form.greeting %}
-    </section>
+    <div class="settings-shell">
+      <nav class="settings-nav" aria-label="Agent sections">
+        <button type="button" class="nav-item on" data-pane="identity">
+          Identity
+          <small>Name, voice, greeting</small>
+        </button>
+        <button type="button" class="nav-item" data-pane="prompt">
+          Prompt
+          <small>System prompt, presets</small>
+        </button>
+        <button type="button" class="nav-item" data-pane="listening">
+          Listening
+          <small>Turn taking, key terms</small>
+        </button>
+        <button type="button" class="nav-item" data-pane="tool">
+          Claim tool
+          <small>URL, timeout, webhook</small>
+        </button>
+      </nav>
 
-    <section class="card block">
-      <h2>Prompt</h2>
-      {% include "claims/_field.html" with field=form.system_prompt %}
-    </section>
+      <div class="settings-panes">
+        <section class="card block pane" id="pane-identity" data-pane="identity">
+          <h2>Identity</h2>
 
-    <section class="card block">
-      <h2>Listening</h2>
-      <div class="grid-2">
-        {% include "claims/_field.html" with field=form.vad_threshold %}
-        {% include "claims/_field.html" with field=form.volume %}
-        {% include "claims/_field.html" with field=form.min_silence %}
-        {% include "claims/_field.html" with field=form.max_silence %}
+          <div class="share-block">
+            <div class="k mono">Share this call link</div>
+            <div class="link-row">
+              <input type="text" id="share-link" readonly value="{{ share_url }}">
+              <button type="button" class="tool-btn" id="copy-link">Copy</button>
+            </div>
+            <p class="hint">
+              {% if profile.public_base_url %}
+                Anyone with this link can talk to Ivy. Sessions are billed to your API key.
+              {% else %}
+                Local only so far. Set a public base URL in Claim tool and this becomes a link you can send.
+              {% endif %}
+            </p>
+            <div class="share-meta">
+              <div><span class="k mono">Agent ID</span><span class="v mono">{{ profile.agent_id|default:"—" }}</span></div>
+              <div><span class="k mono">Webhook</span><span class="v mono">{{ profile.webhook_url|default:"not set" }}</span></div>
+              <div><span class="k mono">Published</span><span class="v mono">{{ profile.published_at|default:"never" }}</span></div>
+            </div>
+          </div>
+
+          {% include "claims/_field.html" with field=form.name %}
+
+          <div class="field{% if form.voice_id.errors %} bad{% endif %}">
+            <label>Voice</label>
+            <p class="hint" style="margin:-2px 0 10px">Immutable once a session starts, so a change applies to the next call.</p>
+            <div class="voice-grid">
+              {% for card in form.voice_cards %}
+                <label class="voice-card{% if card.selected %} on{% endif %}">
+                  <input type="radio" name="{{ form.voice_id.html_name }}" value="{{ card.value }}"
+                    {% if card.selected %}checked{% endif %}>
+                  <span class="voice-name">{{ card.name }}</span>
+                  <span class="voice-region">{{ card.region }}</span>
+                </label>
+              {% endfor %}
+            </div>
+            {% for error in form.voice_id.errors %}<p class="err">{{ error }}</p>{% endfor %}
+          </div>
+
+          {% include "claims/_field.html" with field=form.greeting %}
+        </section>
+
+        <section class="card block pane" id="pane-prompt" data-pane="prompt" hidden>
+          <h2>Prompt</h2>
+          <div class="preset-row" id="presets">
+            {% for preset in presets %}
+              <button type="button" class="chip" data-preset="{{ preset.id }}">{{ preset.label }}</button>
+            {% endfor %}
+          </div>
+          <p class="hint" style="margin-bottom:14px">
+            Presets keep the same tools and question order. They only change tone.
+            If the box already has text, you will be asked before it is replaced.
+          </p>
+          {% include "claims/_field.html" with field=form.system_prompt %}
+
+          <div class="revision-block" id="revisions">
+            <div class="k mono">Published history</div>
+            <p class="hint">Restore a prior publish into this draft. Save &amp; publish again to push it live.</p>
+            {% for rev in revisions %}
+              <div class="revision">
+                <div>
+                  <span class="mono">{{ rev.created_at|date:"M j, H:i" }}</span>
+                  <span class="voice-region">{{ rev.voice_id }}</span>
+                  <p>{{ rev.system_prompt|truncatechars:140 }}</p>
+                </div>
+                <button type="button" class="tool-btn" data-restore="{{ rev.id }}">Restore</button>
+              </div>
+            {% empty %}
+              <p class="empty">Nothing published from here yet. The first publish starts a history.</p>
+            {% endfor %}
+          </div>
+        </section>
+
+        <section class="card block pane" id="pane-listening" data-pane="listening" hidden>
+          <h2>Listening</h2>
+          <div class="grid-2">
+            {% include "claims/_field.html" with field=form.vad_threshold %}
+            {% include "claims/_field.html" with field=form.volume %}
+            {% include "claims/_field.html" with field=form.min_silence %}
+            {% include "claims/_field.html" with field=form.max_silence %}
+          </div>
+          {% include "claims/_field.html" with field=form.interrupt_response %}
+          {% include "claims/_field.html" with field=form.keyterms_text %}
+        </section>
+
+        <section class="card block pane" id="pane-tool" data-pane="tool" hidden>
+          <h2>Claim tool</h2>
+          {% include "claims/_field.html" with field=form.public_base_url %}
+          <p class="hint webhook-line {{ webhook.state }}">
+            {% if webhook.state == 'ok' %}
+              {{ webhook.label }} · POST /api/log-claim/
+            {% elif webhook.state == 'unset' %}
+              No public URL yet — the tool cannot be published without one.
+            {% else %}
+              {{ webhook.label }}. Save a reachable https URL and reload to check again.
+            {% endif %}
+          </p>
+          <div class="grid-2">
+            {% include "claims/_field.html" with field=form.execution_mode %}
+            {% include "claims/_field.html" with field=form.timeout_seconds %}
+          </div>
+          <div class="sync-block">
+            <div class="k mono">Phone calls</div>
+            <p class="hint">
+              Browser calls post a transcript. A phone call only shows duration and
+              how it ended until you pull AssemblyAI sessions.
+            </p>
+            <button type="button" class="tool-btn" id="sync-calls">Sync phone calls</button>
+            <p class="hint" id="sync-result" hidden></p>
+          </div>
+          <p class="hint">
+            The <code>log_claim</code> schema itself lives in <code>agent.json</code> — it is the
+            contract with the backend, so it is not editable here.
+          </p>
+          <details class="preview tool-preview">
+            <summary>What gets sent to AssemblyAI</summary>
+            <pre>{{ config }}</pre>
+          </details>
+        </section>
       </div>
-      {% include "claims/_field.html" with field=form.interrupt_response %}
-      {% include "claims/_field.html" with field=form.keyterms_text %}
-    </section>
+    </div>
 
-    <section class="card block">
-      <h2>Claim tool</h2>
-      {% include "claims/_field.html" with field=form.public_base_url %}
-      <div class="grid-2">
-        {% include "claims/_field.html" with field=form.execution_mode %}
-        {% include "claims/_field.html" with field=form.timeout_seconds %}
-      </div>
-      <p class="hint">
-        The <code>log_claim</code> schema itself lives in <code>agent.json</code> — it is the
-        contract with the backend, so it is not editable here.
-      </p>
-    </section>
-
-    <div class="form-actions">
-      <button type="submit" name="action" value="reset" class="ghost">Reset to agent.json</button>
+    <div class="form-actions settings-foot">
+      <button type="submit" name="action" value="reset" class="ghost" data-skip-dirty>Reset to agent.json</button>
       <button type="submit" name="action" value="save" class="btn end">Save only</button>
       <button type="submit" name="action" value="publish" class="btn">Save &amp; publish</button>
     </div>
   </form>
-
-  <details class="card block preview">
-    <summary>What gets sent to AssemblyAI</summary>
-    <pre>{{ config }}</pre>
-  </details>
 </div>
 
-<script>
-  document.getElementById('copy-link').onclick = async (event) => {
-    const input = document.getElementById('share-link');
-    input.select();
-    try { await navigator.clipboard.writeText(input.value); } catch { document.execCommand('copy'); }
-    event.target.textContent = 'Copied';
-    setTimeout(() => { event.target.textContent = 'Copy'; }, 1600);
-  };
-  // The range inputs read as nothing without their value beside them.
-  document.querySelectorAll('input[type=range]').forEach((range) => {
-    const out = document.createElement('span');
-    out.className = 'range-value mono';
-    const paint = () => { out.textContent = range.value; };
-    range.after(out);
-    range.addEventListener('input', paint);
-    paint();
-  });
-</script>
+{{ presets|json_script:"prompt-presets" }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{% static 'claims/js/settings.js' %}?v=sync"></script>
 {% endblock %}

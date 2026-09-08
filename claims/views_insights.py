@@ -5,6 +5,7 @@ agent doing", which is a different question and the one that tells you what to
 change in the prompt.
 """
 
+from collections import Counter
 from datetime import timedelta
 
 from django.db.models import Avg, Count, Q
@@ -13,7 +14,27 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 
-from .models import Claim, Conversation, IncidentType, Policyholder, VerificationAttempt
+from .models import (
+    Claim,
+    ClaimStatus,
+    Conversation,
+    Dispatch,
+    IncidentType,
+    Policyholder,
+    VerificationAttempt,
+)
+
+# Why a call ended, in words. The agent picks the key from an enum.
+END_REASONS = {
+    "claim_filed": "Claim filed",
+    "caller_said_goodbye": "Caller said goodbye",
+    "could_not_verify": "Could not verify",
+    "policy_not_active": "Policy not active",
+    "wrong_number": "Wrong number",
+    "referred_to_emergency_services": "Sent to emergency services",
+    "caller_will_call_back": "Caller will call back",
+    "agent_ended": "Agent ended, no reason given",
+}
 
 # What each rejected field means in words a person would use.
 MISSING_LABELS = {
@@ -28,23 +49,66 @@ def percent(part, whole):
     return round(100 * part / whole) if whole else 0
 
 
+def quantile(sorted_values, q):
+    if not sorted_values:
+        return 0
+    index = int(round((len(sorted_values) - 1) * q))
+    return sorted_values[index]
+
+
+DURATION_BUCKETS = (
+    (60, "Under 1 min"),
+    (120, "1–2 min"),
+    (240, "2–4 min"),
+    (480, "4–8 min"),
+    (None, "Over 8 min"),
+)
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _headline(calls, claims):
+    total_calls = calls.count()
+    verified_calls = calls.filter(verified=True).count()
+    with_claim = calls.filter(claims__isnull=False).distinct().count()
+    durations = sorted(c.duration_seconds for c in calls if c.duration_seconds)
+    return {
+        "calls": total_calls,
+        "claims": claims.count(),
+        "verified": verified_calls,
+        "with_claim": with_claim,
+        "verified_rate": percent(verified_calls, total_calls),
+        "completion_rate": percent(with_claim, total_calls),
+        "median_seconds": round(quantile(durations, 0.5)),
+        "p90_seconds": round(quantile(durations, 0.9)),
+        "recordings": calls.exclude(recording="").exclude(recording=None).count(),
+        "tows": claims.filter(tow_required=True).count(),
+    }
+
+
 @require_GET
 def metrics(request):
     """Every number the insights page draws, in one request."""
     days = int(request.GET.get("days") or 30)
-    since = timezone.now() - timedelta(days=days)
+    now = timezone.now()
+    since = now - timedelta(days=days)
+    previous_since = since - timedelta(days=days)
 
-    calls = Conversation.objects.filter(started_at__gte=since)
+    calls = (
+        Conversation.objects.filter(started_at__gte=since)
+        .select_related("policyholder")
+        .prefetch_related("claims")
+    )
     claims = Claim.objects.filter(created_at__gte=since)
-
-    total_calls = calls.count()
-    verified_calls = calls.filter(verified=True).count()
-    with_claim = calls.filter(claims__isnull=False).distinct().count()
-    total_claims = claims.count()
-
-    finished = [c for c in calls if c.duration_seconds]
-    durations = sorted(c.duration_seconds for c in finished)
-    median = durations[len(durations) // 2] if durations else 0
+    previous = _headline(
+        Conversation.objects.filter(started_at__gte=previous_since, started_at__lt=since),
+        Claim.objects.filter(created_at__gte=previous_since, created_at__lt=since),
+    )
+    head = _headline(calls, claims)
+    total_calls = head["calls"]
+    verified_calls = head["verified"]
+    with_claim = head["with_claim"]
+    total_claims = head["claims"]
+    durations = sorted(c.duration_seconds for c in calls if c.duration_seconds)
 
     # --- where the agent needed a second attempt ---------------------------
     # Every rejection the webhook recorded, grouped by the field it was missing.
@@ -84,28 +148,202 @@ def metrics(request):
         for value, label in Conversation.Channel.choices
     ]
 
+    # --- one bucket per day ------------------------------------------------
+    # Bucketed in Python rather than SQL: it is a few hundred rows at this
+    # scale, and it keeps the same code working on SQLite and Postgres, which
+    # disagree about date truncation and time zones.
+    bucket_days = min(days, 90)
+    start = (timezone.now() - timedelta(days=bucket_days - 1)).date()
+    buckets = {
+        start + timedelta(days=offset): {"calls": 0, "claims": 0, "verified": 0, "seconds": []}
+        for offset in range(bucket_days)
+    }
+    for call in calls:
+        day = timezone.localtime(call.started_at).date()
+        if day in buckets:
+            buckets[day]["calls"] += 1
+            buckets[day]["verified"] += bool(call.verified)
+            if call.duration_seconds:
+                buckets[day]["seconds"].append(call.duration_seconds)
+    for claim in claims:
+        day = timezone.localtime(claim.created_at).date()
+        if day in buckets:
+            buckets[day]["claims"] += 1
+
+    timeseries = [
+        {
+            "date": day.isoformat(),
+            "calls": row["calls"],
+            "claims": row["claims"],
+            "verified": row["verified"],
+            "median_seconds": round(
+                sorted(row["seconds"])[len(row["seconds"]) // 2] if row["seconds"] else 0
+            ),
+        }
+        for day, row in sorted(buckets.items())
+    ]
+
+    # --- when the phone rings ---------------------------------------------
+    hours = [0] * 24
+    weekdays = [0] * 7
+    duration_counts = [0] * len(DURATION_BUCKETS)
+    notable = []
+    for call in calls:
+        local = timezone.localtime(call.started_at)
+        hours[local.hour] += 1
+        weekdays[local.weekday()] += 1
+        if call.duration_seconds:
+            placed = False
+            for index, (limit, _) in enumerate(DURATION_BUCKETS):
+                if limit is None or call.duration_seconds < limit:
+                    duration_counts[index] += 1
+                    placed = True
+                    break
+            if not placed:
+                duration_counts[-1] += 1
+
+        reasons = []
+        if any(entry.get("rejected") for entry in (call.tool_calls or [])):
+            reasons.append("Needed a second filing")
+        claim = call.claims.all()[0] if call.claims.all() else None
+        if claim and not call.verified:
+            reasons.append("Claim without a verified caller")
+        if call.end_reason == "could_not_verify":
+            reasons.append("Could not verify")
+        if call.duration_seconds and durations and call.duration_seconds >= max(head["p90_seconds"], 240):
+            reasons.append("Long call")
+        if reasons:
+            notable.append(
+                {
+                    "id": call.id,
+                    "when": call.started_at.isoformat(),
+                    "who": call.policyholder.full_name if call.policyholder_id else "Unidentified",
+                    "channel": call.get_channel_display(),
+                    "duration": round(call.duration_seconds),
+                    "verified": call.verified,
+                    "end_reason": END_REASONS.get(
+                        call.end_reason, call.end_reason.replace("_", " ").capitalize()
+                    )
+                    if call.end_reason
+                    else "Still open / no reason",
+                    "claim_id": claim.id if claim else None,
+                    "flags": reasons,
+                }
+            )
+    notable = sorted(notable, key=lambda row: row["when"], reverse=True)[:12]
+
+    ended = {}
+    for call in calls.exclude(end_reason=""):
+        ended[call.end_reason] = ended.get(call.end_reason, 0) + 1
+    agent_ended = sum(ended.values())
+
+    places = Counter()
+    for claim in claims.exclude(location=""):
+        places[claim.location.strip()] += 1
+
+    dispatches = Dispatch.objects.filter(created_at__gte=since)
+    by_kind = [
+        {"key": value, "label": label, "count": dispatches.filter(kind=value).count()}
+        for value, label in Dispatch.Kind.choices
+    ]
+
+    def delta(key):
+        return head[key] - previous[key]
+
     return JsonResponse(
         {
             "window_days": days,
+            "generated_at": now.isoformat(),
+            "previous": previous,
+            "deltas": {
+                "calls": delta("calls"),
+                "claims": delta("claims"),
+                "verified_rate": head["verified_rate"] - previous["verified_rate"],
+                "completion_rate": head["completion_rate"] - previous["completion_rate"],
+                "median_seconds": delta("median_seconds"),
+            },
+            "timeseries": timeseries,
+            "hours": [{"hour": hour, "count": count} for hour, count in enumerate(hours)],
+            "weekdays": [
+                {"label": WEEKDAYS[index], "count": weekdays[index]} for index in range(7)
+            ],
+            "durations": [
+                {"label": label, "count": duration_counts[index]}
+                for index, (_, label) in enumerate(DURATION_BUCKETS)
+            ],
+            "locations": [
+                {"label": name, "count": count}
+                for name, count in places.most_common(8)
+            ],
+            "drivable": [
+                {"label": "Still drivable", "count": claims.filter(is_drivable=True).count()},
+                {"label": "Needs a tow", "count": claims.filter(is_drivable=False).count()},
+            ],
+            "injuries": [
+                {"label": "Injuries reported", "count": claims.filter(injuries_reported=True).count()},
+                {"label": "No injuries", "count": claims.filter(injuries_reported=False).count()},
+                {
+                    "label": "Not asked / unknown",
+                    "count": claims.filter(injuries_reported__isnull=True).count(),
+                },
+            ],
+            "claim_status": [
+                {
+                    "key": value,
+                    "label": label,
+                    "count": claims.filter(status=value).count(),
+                }
+                for value, label in ClaimStatus.choices
+            ],
+            "end_reasons": sorted(
+                (
+                    {
+                        "key": key,
+                        "label": END_REASONS.get(key, key.replace("_", " ").capitalize()),
+                        "count": count,
+                    }
+                    for key, count in ended.items()
+                ),
+                key=lambda row: -row["count"],
+            ),
+            "dispatch": {
+                "total": dispatches.count(),
+                "open": dispatches.exclude(
+                    status__in=[Dispatch.Status.ARRIVED, Dispatch.Status.CANCELLED]
+                ).count(),
+                "manual": dispatches.exclude(raised_by="system").count(),
+                "by_kind": [row for row in by_kind if row["count"]],
+            },
             "headline": {
-                "calls": total_calls,
-                "claims": total_claims,
-                "verified_rate": percent(verified_calls, total_calls),
-                "completion_rate": percent(with_claim, total_calls),
-                "median_seconds": round(median),
-                "recordings": calls.exclude(recording="").exclude(recording=None).count(),
+                **head,
+                "dropoff_after_verify": max(0, verified_calls - with_claim),
             },
             # Where callers drop out, in order. Each stage is a subset of the one
             # before it, so the bars are honestly comparable.
             "funnel": [
-                {"label": "Calls answered", "count": total_calls},
-                {"label": "Identity verified", "count": verified_calls},
-                {"label": "Claim filed", "count": with_claim},
-                {"label": "Tow dispatched", "count": claims.filter(tow_required=True).count()},
+                {"label": "Calls answered", "count": total_calls, "from_previous": None},
+                {
+                    "label": "Identity verified",
+                    "count": verified_calls,
+                    "from_previous": percent(verified_calls, total_calls),
+                },
+                {
+                    "label": "Claim filed",
+                    "count": with_claim,
+                    "from_previous": percent(with_claim, verified_calls),
+                },
+                {
+                    "label": "Tow dispatched",
+                    "count": claims.filter(tow_required=True).count(),
+                    "from_previous": percent(
+                        claims.filter(tow_required=True).count(), with_claim
+                    ),
+                },
             ],
             "risk_bands": [{"label": label, "count": count} for label, count in risk_bands],
             "incident_types": by_type,
             "channels": by_channel,
+            "notable": notable,
             "quality": {
                 "calls_with_rejection": calls_with_rejection,
                 "rejection_rate": percent(calls_with_rejection, total_calls),
@@ -122,6 +360,7 @@ def metrics(request):
                 ),
                 "verification_checks": checks_total,
                 "verification_pass_rate": percent(checks_passed, checks_total),
+                "verification_failed": checks_total - checks_passed,
                 "average_risk": round(
                     claims.aggregate(value=Avg("risk_score"))["value"] or 0
                 ),
@@ -129,6 +368,11 @@ def metrics(request):
                     Q(conversation__isnull=True) | Q(conversation__verified=False)
                 ).count(),
                 "policyholders": Policyholder.objects.count(),
+                "agent_ended_calls": agent_ended,
+                "agent_ended_rate": percent(agent_ended, total_calls),
+                "median_turns": round(
+                    quantile(sorted(len(c.turns or []) for c in calls), 0.5)
+                ),
             },
         }
     )
@@ -151,6 +395,11 @@ def export_calls(request):
 
     def lines():
         queryset = Conversation.objects.select_related("policyholder").order_by("started_at")
+        days = request.GET.get("days")
+        if days and days.isdigit():
+            queryset = queryset.filter(
+                started_at__gte=timezone.now() - timedelta(days=int(days))
+            )
         if request.GET.get("verified") == "1":
             queryset = queryset.filter(verified=True)
         for call in queryset.iterator():

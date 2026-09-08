@@ -82,10 +82,11 @@ class Policyholder(models.Model):
             return described[0]
         return ", ".join(described[:-1]) + " and " + described[-1]
 
-    def as_dict(self, reveal=False):
-        """`reveal` adds the last four digits, which are the shared secret Ivy
-        checks. Only the demo directory asks for them; nothing the agent or the
-        voice page reads ever gets them."""
+    def as_dict(self, reveal=False, demo=False):
+        """`reveal` adds the last four digits and the full contact details, and
+        belongs to the desk alone. `demo` is the narrow version for the
+        Talk-to-Ivy card: the digits a tester needs to read out, and nothing
+        else — no full number, no address, no email, no notes."""
         data = {
             "id": self.id,
             "policy_number": self.policy_number,
@@ -105,11 +106,20 @@ class Policyholder(models.Model):
             "vehicles": self.vehicles,
             "vehicle_line": self.vehicle_line(),
             "notes": self.notes,
-            "claims": self.claims.count(),
+            "claims": getattr(self, "claim_count", None),
+            "calls": getattr(self, "call_count", None),
         }
+        if data["claims"] is None:
+            data["claims"] = self.claims.count()
+        if data["calls"] is None:
+            data["calls"] = 0
         if reveal:
             data["phone_last4"] = self.phone_last4
             data["phone"] = self.phone
+        elif demo:
+            data["phone_last4"] = self.phone_last4
+            for private in ("address", "email", "notes"):
+                data[private] = ""
         return data
 
 
@@ -183,7 +193,13 @@ class Conversation(models.Model):
     started_at = models.DateTimeField(default=timezone.now, db_index=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     duration_seconds = models.FloatField(default=0)
+    # How the transport closed (client_end, session_ended) versus why the agent
+    # chose to hang up. They answer different questions and the second is the
+    # interesting one, so a client reporting the first must not erase it.
     close_reason = models.CharField(max_length=64, blank=True)
+    end_reason = models.CharField(max_length=64, blank=True)
+    needs_human = models.BooleanField(default=False)
+    handoff_reason = models.CharField(max_length=64, blank=True)
 
     class Meta:
         ordering = ["-started_at"]
@@ -220,6 +236,7 @@ class Conversation(models.Model):
             "ended_at": self.ended_at.isoformat() if self.ended_at else None,
             "duration_seconds": round(self.duration_seconds, 1),
             "close_reason": self.close_reason,
+            "end_reason": self.end_reason,
             "turn_count": len(self.turns or []),
             "recording_url": (
                 reverse("conversation-recording", args=[self.id]) if self.recording else None
@@ -229,6 +246,8 @@ class Conversation(models.Model):
             "summary": self.summary_line(),
             "claim_id": claim.id if claim else None,
             "claim_reference": f"CV-{claim.id:05d}" if claim else None,
+            "needs_human": self.needs_human,
+            "handoff_reason": self.handoff_reason,
         }
         if include_turns:
             data["turns"] = self.turns or []
@@ -242,3 +261,83 @@ class Conversation(models.Model):
                 for v in self.verifications.all()
             ]
         return data
+
+
+class Dispatch(models.Model):
+    """Something sent to the scene.
+
+    The risk engine raises one automatically when a claim needs a tow. A
+    dispatcher raises the rest by hand — a second truck, an adjuster, a
+    locksmith — which is why `raised_by` distinguishes them.
+    """
+
+    class Kind(models.TextChoices):
+        TOW = "tow", "Tow truck"
+        ADJUSTER = "adjuster", "Adjuster"
+        INVESTIGATOR = "investigator", "Theft investigator"
+        LOCKSMITH = "locksmith", "Locksmith"
+        RENTAL = "rental", "Replacement vehicle"
+        AMBULANCE = "ambulance", "Medical"
+
+    class Status(models.TextChoices):
+        REQUESTED = "requested", "Requested"
+        EN_ROUTE = "en_route", "En route"
+        ARRIVED = "arrived", "Arrived"
+        CANCELLED = "cancelled", "Cancelled"
+
+    claim = models.ForeignKey(
+        "claims.Claim", related_name="dispatches", on_delete=models.CASCADE
+    )
+    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.TOW)
+    vendor = models.CharField(max_length=120, blank=True)
+    vendor_phone = models.CharField(max_length=24, blank=True)
+    eta_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    notes = models.CharField(max_length=255, blank=True)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.REQUESTED
+    )
+    # "system" when the risk engine raised it on ingest, otherwise the
+    # dispatcher who did.
+    raised_by = models.CharField(max_length=60, default="system")
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name_plural = "dispatches"
+
+    def __str__(self):
+        return f"{self.get_kind_display()} for CV-{self.claim_id:05d}"
+
+    @property
+    def automatic(self):
+        return self.raised_by == "system"
+
+    @property
+    def remaining_minutes(self):
+        if self.eta_minutes is None:
+            return None
+        if self.status == self.Status.ARRIVED:
+            return 0
+        if self.status == self.Status.CANCELLED:
+            return None
+        elapsed = (timezone.now() - self.created_at).total_seconds() / 60
+        return max(0, int(round(self.eta_minutes - elapsed)))
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "claim_id": self.claim_id,
+            "kind": self.kind,
+            "kind_label": self.get_kind_display(),
+            "vendor": self.vendor,
+            "vendor_phone": self.vendor_phone,
+            "eta_minutes": self.eta_minutes,
+            "remaining_minutes": self.remaining_minutes,
+            "notes": self.notes,
+            "status": self.status,
+            "status_label": self.get_status_display(),
+            "raised_by": self.raised_by,
+            "automatic": self.automatic,
+            "created_at": self.created_at.isoformat(),
+        }

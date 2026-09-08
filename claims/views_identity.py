@@ -7,6 +7,8 @@ about what it gives away.
 
 import json
 import logging
+import os
+import threading
 from datetime import timedelta
 
 from django.conf import settings
@@ -16,6 +18,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 
+from .agent_api import AgentApiError, api
 from .models import Conversation, Policyholder, VerificationAttempt
 
 log = logging.getLogger("claims")
@@ -404,12 +407,16 @@ def conversation_by_session(request):
     )
     if not conversation:
         return JsonResponse({"verified": False, "policyholder": None})
+    failed = conversation.verifications.filter(passed=False).count()
+    remaining = 0 if conversation.verified else max(0, MAX_ATTEMPTS - failed)
     return JsonResponse(
         {
             "verified": conversation.verified,
             "policyholder": conversation.policyholder.as_dict()
             if conversation.policyholder
             else None,
+            "attempts_remaining": remaining,
+            "locked": (not conversation.verified) and failed >= MAX_ATTEMPTS,
         }
     )
 
@@ -424,24 +431,176 @@ def conversation_detail(request, pk):
 
 @require_GET
 def policyholder_feed(request):
-    queryset = Policyholder.objects.prefetch_related("claims")
+    from django.db.models import Count, Q
+
+    queryset = Policyholder.objects.annotate(
+        claim_count=Count("claims", distinct=True),
+        call_count=Count("conversations", distinct=True),
+    )
+    policy = (request.GET.get("policy") or "").strip().upper()
+    if policy:
+        queryset = queryset.filter(policy_number__iexact=policy)
     search = (request.GET.get("q") or "").strip()
     if search:
-        from django.db.models import Q
-
         queryset = queryset.filter(
             Q(full_name__icontains=search)
             | Q(policy_number__icontains=search)
             | Q(email__icontains=search)
+            | Q(address__icontains=search)
+            | Q(notes__icontains=search)
+            | Q(phone__icontains=search)
         )
-    # The directory is the demo book: it shows the digits so a tester can call
-    # in as someone. A real deployment would drop `reveal` and put this page
-    # behind a login.
+    # The last four is the shared secret the agent verifies against, so the
+    # desk sees it and nobody else does — unless this deployment has opted into
+    # demo credentials, and then only for one policy asked for by name.
+    from .desk import desk_unlocked
+
+    reveal = desk_unlocked(request)
+    demo = bool(policy) and settings.DEMO_CREDENTIALS
+    holders = list(queryset[:200])
     return JsonResponse(
-        {"policyholders": [p.as_dict(reveal=True) for p in queryset[:200]]}
+        {
+            "policyholders": [p.as_dict(reveal=reveal, demo=demo) for p in holders],
+            "total": queryset.count(),
+            "revealed": reveal or demo,
+        }
     )
 
 
 def directory(request):
     """A page for the dispatcher, not the agent: who is on the books."""
     return render(request, "claims/directory.html", {})
+
+
+# --- hanging up ------------------------------------------------------------
+
+# How long the closing line needs before the line is cut from this side. The
+# client normally hangs up first, cleanly, as soon as the goodbye finishes
+# playing; this is the backstop for a caller on a phone, where there is no
+# client of ours in the call at all.
+HANGUP_GRACE_SECONDS = float(os.environ.get("HANGUP_GRACE_SECONDS", 14))
+
+
+def _end_session_soon(session_id, seconds=HANGUP_GRACE_SECONDS):
+    """Cut the line after the goodbye has had time to play.
+
+    A background timer rather than a task queue: there is exactly one of these
+    per call, it holds no state, and losing it on a restart costs nothing —
+    the session ends by itself when the caller hangs up.
+    """
+
+    def cut():
+        target = session_id
+        if not target:
+            # A phone call never told us its session id, so find the one that
+            # is still running on our agent and end that.
+            target = _live_session_id()
+        if not target:
+            log.warning("end_call: no session to hang up")
+            return
+        try:
+            api(f"/sessions/{target}", method="DELETE")
+            log.info("end_call: hung up %s", target)
+        except AgentApiError as exc:
+            # Already gone is the normal case: the client got there first.
+            if exc.status not in (404, 409):
+                log.warning("end_call: could not hang up %s (%s)", target, exc)
+
+    threading.Timer(seconds, cut).start()
+
+
+def _live_session_id():
+    """The session currently running on our agent, if there is one."""
+    try:
+        listing = api("/sessions")
+    except AgentApiError as exc:
+        log.warning("end_call: could not list sessions (%s)", exc)
+        return None
+    for session in listing.get("sessions") or []:
+        if session.get("status") == "completed":
+            continue
+        if settings.ASSEMBLYAI_AGENT_ID and session.get("agent_id") != settings.ASSEMBLYAI_AGENT_ID:
+            continue
+        return session.get("id")
+    return None
+
+
+@csrf_exempt
+def end_call(request):
+    """The tool Ivy calls to hang up.
+
+    The API has no native hangup, so this is it: the call is closed out here and
+    the session is deleted a beat later, once the closing line has played. The
+    browser and the simulator hang up themselves the moment the goodbye
+    finishes, which is faster and cleaner; this covers the phone, where nothing
+    of ours is in the call.
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    secret = settings.CLAIM_WEBHOOK_SECRET
+    if secret and request.headers.get("X-Claim-Secret") != secret:
+        return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        payload = {}
+
+    reason = str(payload.get("reason") or "").strip().lower()[:64]
+    conversation = _conversation(payload, request)
+    conversation.end_reason = reason or "agent_ended"
+    if not conversation.ended_at:
+        conversation.ended_at = timezone.now()
+    conversation.tool_calls = (conversation.tool_calls or []) + [
+        {"name": "end_call", "arguments": {"reason": reason}}
+    ]
+    conversation.save(update_fields=["end_reason", "ended_at", "tool_calls"])
+
+    log.info("end_call: %s on call %s", reason or "no reason", conversation.id)
+    _end_session_soon(conversation.session_id)
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "message": "",
+            "instructions": (
+                "The call is being disconnected now. Say nothing further and do not "
+                "ask another question."
+            ),
+        }
+    )
+
+
+@csrf_exempt
+def request_human(request):
+    """Ivy asks for a person. The board lights up; the call stays open."""
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    secret = settings.CLAIM_WEBHOOK_SECRET
+    if secret and request.headers.get("X-Claim-Secret") != secret:
+        return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        payload = {}
+    reason = str(payload.get("reason") or "caller_request").strip()[:64]
+    conversation = _conversation(payload, request)
+    conversation.needs_human = True
+    conversation.handoff_reason = reason
+    conversation.tool_calls = (conversation.tool_calls or []) + [
+        {"name": "request_human", "arguments": {"reason": reason}}
+    ]
+    conversation.save(update_fields=["needs_human", "handoff_reason", "tool_calls"])
+    claim = conversation.claim
+    if claim:
+        claim.needs_human = True
+        claim.handoff_reason = reason
+        claim.save(update_fields=["needs_human", "handoff_reason"])
+    return JsonResponse(
+        {
+            "ok": True,
+            "message": "An adjuster is being pulled in now. Stay on the line.",
+            "handoff_reason": reason,
+        }
+    )

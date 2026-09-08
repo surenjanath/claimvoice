@@ -6,6 +6,7 @@ webhook AssemblyAI posts extracted claims to, and the dispatcher dashboard.
 
 from pathlib import Path
 import os
+import sys
 
 from dotenv import load_dotenv
 
@@ -63,6 +64,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "claims.desk.DeskAuthMiddleware",
 ]
 
 ROOT_URLCONF = "claimvoice.urls"
@@ -77,6 +79,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "claims.desk.desk_context",
             ],
         },
     },
@@ -166,6 +169,31 @@ if not PUBLIC_BASE_URL:
             break
 # Optional shared secret required on the webhook when set.
 CLAIM_WEBHOOK_SECRET = os.environ.get("CLAIM_WEBHOOK_SECRET", "")
+
+# Nominatim is best-effort and must never block a claim. Tests skip the network.
+GEOCODE_CLAIMS = env_bool("GEOCODE_CLAIMS", True)
+if "test" in sys.argv:
+    GEOCODE_CLAIMS = False
+
+# Off in DEBUG so local demos and tests stay open. On in production unless
+# DESK_AUTH=0. Password is DESK_PASSWORD, default claimvoice.
+DESK_AUTH = env_bool("DESK_AUTH", not DEBUG)
+# The Talk-to-Ivy page can show a demo caller's policy number and the last four
+# digits, so someone testing has credentials to read out. Those digits are the
+# secret the agent verifies against, so handing them to anonymous visitors is a
+# deliberate choice for a demo deployment, never a default: off unless asked
+# for, and even then only ever one policy at a time, looked up by name.
+DEMO_CREDENTIALS = env_bool("DEMO_CREDENTIALS", False)
+DESK_PASSWORD = os.environ.get("DESK_PASSWORD", "claimvoice")
+
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587") or 587)
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL", "ClaimVoice <noreply@localhost>"
+)
 
 # A recording is roughly 100 KB per second of call at 24 kHz stereo, so a long
 # call is a big upload. This caps it rather than letting one fill the disk.

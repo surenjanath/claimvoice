@@ -6,7 +6,7 @@
 <title>{% block title %}ClaimVoice{% endblock %}</title>
 <meta name="description" content="ClaimVoice — the AI first-responder for insurance claims intake.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='9' fill='%236366f1'/></svg>">
-<link rel="stylesheet" href="{% static 'claims/css/app.css' %}">
+<link rel="stylesheet" href="{% static 'claims/css/app.css' %}?v=align2">
 </head>
 <body class="{% block body_class %}{% endblock %}">
 <header class="topbar">
@@ -17,6 +17,9 @@
     <a href="{% url 'insights' %}" class="{% block nav_insights %}{% endblock %}">Insights</a>
     <a href="{% url 'directory' %}" class="{% block nav_dir %}{% endblock %}">Directory</a>
     <a href="{% url 'settings' %}" class="{% block nav_settings %}{% endblock %}">Agent</a>
+    {% if desk_auth and desk_ok %}
+      <a href="{% url 'logout' %}">Log out</a>
+    {% endif %}
   </nav>
 </header>
 {% if messages %}<ul class="flashes">{% for message in messages %}<li class="flash {{ message.tags }}">{{ message }}</li>{% endfor %}</ul>{% endif %}

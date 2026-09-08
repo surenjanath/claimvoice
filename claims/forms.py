@@ -32,6 +32,7 @@ class AgentProfileForm(forms.ModelForm):
         widgets = {
             "system_prompt": forms.Textarea(attrs={"rows": 18, "spellcheck": "false"}),
             "greeting": forms.Textarea(attrs={"rows": 2}),
+            "voice_id": forms.RadioSelect,
             "vad_threshold": forms.NumberInput(
                 attrs={"type": "range", "min": "0", "max": "1", "step": "0.05"}
             ),
@@ -71,6 +72,24 @@ class AgentProfileForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if self.instance and self.instance.pk:
             self.fields["keyterms_text"].initial = "\n".join(self.instance.keyterms or [])
+
+    def voice_cards(self):
+        """Name + region for the card picker, plus whether it is selected."""
+        selected = self["voice_id"].value()
+        cards = []
+        for value, label in self.fields["voice_id"].choices:
+            if not value:
+                continue
+            name, _, region = label.partition(" — ")
+            cards.append(
+                {
+                    "value": value,
+                    "name": name,
+                    "region": region,
+                    "selected": value == selected,
+                }
+            )
+        return cards
 
     def clean_public_base_url(self):
         return (self.cleaned_data.get("public_base_url") or "").rstrip("/")
