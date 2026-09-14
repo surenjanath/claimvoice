@@ -295,6 +295,17 @@
     failed: 'bad',
   };
 
+  // How long the *current* ring has been going, not the whole time the caller
+  // has waited — a fresh attempt after an overflow should not read as overdue
+  // just because an earlier one was.
+  function currentRingSeconds(row) {
+    if (row.status !== 'ringing') return null;
+    const attempts = row.attempts || [];
+    const last = attempts[attempts.length - 1];
+    if (!last || last.outcome !== 'ringing') return null;
+    return Math.max(0, (Date.now() - new Date(last.at).getTime()) / 1000);
+  }
+
   function triedCell(row) {
     const attempts = row.attempts || [];
     if (!attempts.length) return '<span class="muted">—</span>';
@@ -308,7 +319,14 @@
 
   function queueRow(row) {
     const tr = document.createElement('tr');
-    tr.className = row.open ? 'queue-open' : '';
+    const ringFor = currentRingSeconds(row);
+    const ringLimit = (cover && cover.ringSeconds) || 20;
+    // Flagged once a ring is most of the way to its own timeout, so a
+    // dispatcher sees it before the overflow — not after — moves it along.
+    const slaWarn = ringFor != null && ringFor >= ringLimit * 0.6;
+    tr.className = [row.open ? 'queue-open' : '', slaWarn ? 'queue-sla-warn' : '']
+      .filter(Boolean)
+      .join(' ');
     const reference = row.claim_reference
       ? `<a href="#claim-${row.claim_id}">${escape(row.claim_reference)}</a>`
       : '<span class="muted">no claim</span>';
@@ -331,6 +349,13 @@
     pill.className = `pill ${QUEUE_TONE[row.status] || ''}`;
     pill.textContent = row.status_label;
     state.append(pill);
+    if (slaWarn) {
+      const warn = document.createElement('span');
+      warn.className = 'pill bad';
+      warn.textContent = ringFor >= ringLimit ? 'overdue' : 'closing in';
+      warn.title = `Ringing ${Math.round(ringFor)}s of ${ringLimit}s before it overflows to the next person.`;
+      state.append(warn);
+    }
     if (row.simulated) {
       const sim = document.createElement('span');
       sim.className = 'pill quiet';
@@ -1562,7 +1587,11 @@
     if (!CFG.queueUrl) return;
     const body = await fetch(CFG.queueUrl).then((res) => res.json());
     queue = body.handoffs || [];
-    cover = { roster: body.roster || {}, transfers: body.transfers || {} };
+    cover = {
+      roster: body.roster || {},
+      transfers: body.transfers || {},
+      ringSeconds: body.ring_seconds || 20,
+    };
     render();
   }
 
@@ -1716,6 +1745,13 @@
   setInterval(() => {
     if (claims.length || conversations.length || dispatches.length) render();
   }, 30000);
+
+  // A ring closing in on its timeout needs to be seen before it happens, not
+  // reported after — this is a local re-render, no request, so it costs
+  // nothing when nobody is actually ringing.
+  setInterval(() => {
+    if (view === 'queue' && queue.some((row) => row.status === 'ringing')) render();
+  }, 4000);
 
   if (CFG.vendorsUrl) {
     fetch(CFG.vendorsUrl)

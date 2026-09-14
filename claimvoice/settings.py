@@ -230,3 +230,25 @@ LOGGING = {
         "claims": {"handlers": ["console"], "level": "INFO"},
     },
 }
+
+# Errors otherwise only exist in whatever log lines a hosting platform keeps
+# around, which is nowhere once the dyno recycles. Off unless a DSN is given —
+# same shape as every other optional integration here.
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
+if SENTRY_DSN and "test" not in sys.argv:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            # WARNING and above as breadcrumbs, ERROR and above as events —
+            # matches the "claims" logger's own level so nothing extra ships.
+            LoggingIntegration(level=None, event_level="ERROR"),
+        ],
+        environment=os.environ.get("SENTRY_ENVIRONMENT", "production" if not DEBUG else "development"),
+        traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0") or 0),
+        send_default_pii=False,
+    )

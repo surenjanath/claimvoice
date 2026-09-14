@@ -24,6 +24,7 @@ What deliberately does not happen:
 """
 
 import logging
+from datetime import timedelta
 from xml.sax.saxutils import escape, quoteattr
 
 from django.conf import settings
@@ -37,6 +38,10 @@ log = logging.getLogger("claims")
 
 # How long one dispatcher's phone rings before moving on.
 RING_SECONDS = 20
+# Slack on top of the ring window before a row still RINGING counts as stuck.
+# Twilio's own POST to the callback is what moves it along; this only covers
+# the POST never landing at all.
+STALE_SLACK_SECONDS = 90
 # How many people to try before falling back. A caller will not hold through
 # five phones ringing in sequence, whatever the rota says.
 MAX_ATTEMPTS = 3
@@ -78,7 +83,7 @@ def transfer_ready():
 # --- opening one ------------------------------------------------------------
 
 
-def open_handoff(conversation, reason="caller_request", claim=None, by=None):
+def open_handoff(conversation, reason="caller_request", claim=None):
     """Start a handoff for this call and set it going.
 
     Idempotent per call: a caller who asks twice, or an agent that fires the
@@ -100,9 +105,6 @@ def open_handoff(conversation, reason="caller_request", claim=None, by=None):
         reason=reason[:64],
         caller_number=conversation.caller_number or "",
     )
-    if by is not None:
-        handoff.dispatcher = by
-        handoff.save(update_fields=["dispatcher"])
     return begin(handoff)
 
 
@@ -178,7 +180,7 @@ def ring_next(handoff):
             f"/Calls/{call_sid}.json",
             {"Twiml": dial_twiml(handoff, number, first=not tried)},
         )
-    except telephony.TelephonyError as exc:
+    except Exception as exc:  # noqa: BLE001 — the caller must hear something, not a 500
         attempt.outcome = HandoffAttempt.Outcome.FAILED
         attempt.detail = str(exc)[:255]
         attempt.save(update_fields=["outcome", "detail"])
@@ -279,6 +281,7 @@ def on_dial_status(handoff, dial_status):
         handoff.save(update_fields=["status", "connected_at", "ended_at"])
         who = handoff.dispatcher.name if handoff.dispatcher else "a dispatcher"
         note_on_claim(handoff, f"Caller was put through to {who}.")
+        clear_needs_human(handoff)
         log.info("handoff %s: connected to %s", handoff.id, who)
         # The dispatcher hung up, so the caller's leg ends too.
         return goodbye_twiml("Thank you for calling. Goodbye.")
@@ -352,11 +355,76 @@ def note_on_claim(handoff, message):
     )
 
 
+def clear_needs_human(handoff):
+    """The person part is done — stop asking the board for one.
+
+    Nothing else ever turns this flag back off: `request_human` and a stalled
+    tow escalation are the only places that set it, so a claim answered
+    correctly and never closed here would sit flagged "owed a person" forever,
+    long after somebody actually spoke to the caller.
+    """
+    claim = handoff.claim
+    if claim and claim.needs_human:
+        claim.needs_human = False
+        claim.save(update_fields=["needs_human"])
+    conversation = handoff.conversation
+    if conversation and conversation.needs_human:
+        conversation.needs_human = False
+        conversation.save(update_fields=["needs_human"])
+
+
 def close(handoff, status=Handoff.Status.DONE, note=""):
-    """A dispatcher marking it dealt with, or the call ending under it."""
+    """A dispatcher marking it dealt with, by hand or by call.
+
+    Pressing Close is the dispatcher saying so themselves — the claim comes
+    off the "owed a person" list whatever the status, because a human just
+    made that judgment call.
+    """
     handoff.status = status
     handoff.ended_at = handoff.ended_at or timezone.now()
     if note:
         handoff.note = note[:255]
     handoff.save(update_fields=["status", "ended_at", "note"])
+    clear_needs_human(handoff)
     return handoff
+
+
+# --- when the callback itself never arrives ---------------------------------
+
+
+def stale_ringing():
+    """Rows stuck RINGING well past when Twilio should have reported back.
+
+    Twilio always POSTs to `action` when a <Dial> leg ends — answered, busy, no
+    answer, or the ring timeout hit — so a row still RINGING this long after
+    its last attempt means that POST never landed: the app was down, the
+    request failed, or nothing was really being dialled. Left alone the caller
+    stays "ringing" on the board forever, `waited_seconds` climbing long after
+    the call itself is over.
+    """
+    cutoff = timezone.now() - timedelta(seconds=ring_seconds() + STALE_SLACK_SECONDS)
+    return [
+        handoff
+        for handoff in Handoff.objects.filter(status=Handoff.Status.RINGING)
+        if (_last_attempt_at(handoff) or handoff.created_at) < cutoff
+    ]
+
+
+def _last_attempt_at(handoff):
+    attempt = handoff.attempts.order_by("-created_at").first()
+    return attempt.created_at if attempt else None
+
+
+def reap_stale(handoff):
+    """Close out a handoff whose dial-status callback never arrived.
+
+    Nothing here claims to know whether the dispatcher actually answered — it
+    did not hear back either way, and saying "no answer" is the honest gap
+    between "nobody knows" and leaving the caller shown as ringing forever.
+    """
+    attempt = handoff.attempts.order_by("-created_at").first()
+    if attempt and attempt.outcome == HandoffAttempt.Outcome.RINGING:
+        attempt.outcome = HandoffAttempt.Outcome.FAILED
+        attempt.detail = "no dial status received"
+        attempt.save(update_fields=["outcome", "detail"])
+    return nobody_answered(handoff, "no dial status arrived before the ring window closed")

@@ -157,6 +157,29 @@
   </div>
 
   <section class="card panel wide">
+    <h2>Who answered the phone</h2>
+    <p class="panel-note">
+      Every time a caller asked for a person, who was rung and what came of it.
+      Rate is of rings, not of handoffs — one caller can ring more than one person.
+    </p>
+    <div class="quality-row" id="dispatcher-summary"></div>
+    <table class="table notable">
+      <thead>
+        <tr>
+          <th>Dispatcher</th>
+          <th>On call now</th>
+          <th>Rung</th>
+          <th>Answered</th>
+          <th>Answer rate</th>
+          <th>Avg. time to answer</th>
+        </tr>
+      </thead>
+      <tbody id="dispatchers"></tbody>
+    </table>
+    <p class="empty" id="dispatchers-empty" hidden>Nobody has been rung in this window.</p>
+  </section>
+
+  <section class="card panel wide">
     <h2>Where Ivy needed a second attempt</h2>
     <p class="panel-note">
       Every time the claim webhook refused a filing and sent the agent back to ask.
@@ -202,5 +225,5 @@
 </script>
 <script src="{% static 'claims/js/charts.js' %}"></script>
 <script src="{% static 'claims/js/live.js' %}"></script>
-<script src="{% static 'claims/js/insights.js' %}?v=live"></script>
+<script src="{% static 'claims/js/insights.js' %}?v=dispatchers"></script>
 {% endblock %}

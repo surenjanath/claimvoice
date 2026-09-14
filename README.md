@@ -338,6 +338,15 @@ When the rota is empty or everybody has been tried, the caller is told so in
 words and the fallback number is texted. A queue that overflows into silence is
 not a queue.
 
+Twilio always reports back when a dial ends — answered, busy, no answer, or the
+ring timeout — but that report is one HTTP POST, and one HTTP POST can be lost:
+the app restarting mid-call, a network blip. Left alone, a row like that sits
+on the board reading **Ringing** forever, `waited_seconds` climbing long after
+the call itself is over. `manage.py watch_handoffs [--loop 30]` finds anything
+still ringing past its window, closes it as no-answer, and texts the fallback
+— the same overflow path as running out of people to try, because from the
+board's point of view that is what happened.
+
 Two things to know: the trunk takes ownership of the number, so any Voice webhook
 set on the number itself stops applying; and Twilio bills the inbound minutes
 while AssemblyAI bills the session, so a live number draws on both accounts.
@@ -353,6 +362,7 @@ python manage.py seed_claims --count 12 --clear # claims, each with the call it 
 python manage.py sync_calls [--prune]           # pull session metadata; --prune drops empty call rows
 python manage.py connect_phone [--detach]       # attach the agent to a Twilio number
 python manage.py create_dispatcher              # somebody who can log in and be rung
+python manage.py watch_handoffs [--loop 30]     # close out transfers whose dial status never arrived
 python manage.py test
 node tools/check_live.mjs                       # the page heartbeat, without a browser
 ```

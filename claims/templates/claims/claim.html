@@ -16,6 +16,7 @@
     </div>
     <div class="right actions">
       <span class="pill {% if claim.status == 'closed' %}ok{% else %}warn{% endif %}">{{ claim.get_status_display }}</span>
+      <button class="tool-btn" id="print-btn" type="button">Print / save as PDF</button>
       {% if desk_ok %}<a class="tool-btn" href="{% url 'dashboard' %}#claim-{{ claim.id }}">Open on board</a>{% endif %}
     </div>
   </div>
@@ -110,5 +111,5 @@
 {% block scripts %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="{% static 'claims/js/share.js' %}?v=eta"></script>
+<script src="{% static 'claims/js/share.js' %}?v=print"></script>
 {% endblock %}

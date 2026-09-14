@@ -233,6 +233,34 @@
       )
       .join('');
 
+    const dispatchers = data.dispatchers;
+    $('dispatcher-summary').innerHTML = [
+      [dispatchers.handoffs, 'callers asked for a person'],
+      [dispatchers.answered, 'put through to somebody'],
+      [dispatchers.no_answer, 'nobody picked up'],
+      [`${dispatchers.answer_rate}%`, 'of rings answered'],
+    ]
+      .map(
+        ([value, label]) =>
+          `<div><span class="q-value">${escape(value)}</span><span class="q-label">${escape(label)}</span></div>`
+      )
+      .join('');
+    const dispatcherRows = $('dispatchers');
+    const dispatcherEmpty = $('dispatchers-empty');
+    dispatcherRows.replaceChildren();
+    dispatcherEmpty.hidden = dispatchers.people.length > 0;
+    for (const person of dispatchers.people) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escape(person.name)}</td>
+        <td>${person.on_call ? '<span class="pill ok">On call</span>' : ''}</td>
+        <td class="mono">${escape(person.rung)}</td>
+        <td class="mono">${escape(person.answered)}</td>
+        <td class="mono">${escape(person.answer_rate)}%</td>
+        <td class="mono">${person.avg_answer_seconds == null ? '—' : escape(clock(person.avg_answer_seconds))}</td>`;
+      dispatcherRows.append(tr);
+    }
+
     const quality = data.quality;
     drawBars(
       $('rejections'),

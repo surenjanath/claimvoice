@@ -17,7 +17,7 @@ from django.views.decorators.http import require_GET, require_POST
 from . import handoff as handoffs
 from . import roster
 from .desk import current_dispatcher
-from .models import Conversation, DeskAction, Handoff, HandoffAttempt
+from .models import DeskAction, Handoff, HandoffAttempt
 from .models_desk import record
 
 log = logging.getLogger("claims")
@@ -37,6 +37,9 @@ def handoff_feed(request):
             "handoffs": [h.as_dict() for h in queryset[:100]],
             "roster": roster.summary(),
             "transfers": dict(zip(("live", "why"), handoffs.transfer_ready())),
+            # So the board can flag a ring approaching its own timeout without
+            # hardcoding a number that only settings.py actually knows.
+            "ring_seconds": handoffs.ring_seconds(),
         }
     )
 
@@ -168,11 +171,3 @@ def desk_log(request):
     """The audit trail, newest first."""
     rows = DeskAction.objects.select_related("dispatcher")[:200]
     return JsonResponse({"actions": [a.as_dict() for a in rows]})
-
-
-def open_for_conversation(conversation_id, reason="caller_request"):
-    """Used by the tool webhook, which has already authenticated itself."""
-    conversation = Conversation.objects.filter(pk=conversation_id).first()
-    if not conversation:
-        return None
-    return handoffs.open_handoff(conversation, reason=reason)

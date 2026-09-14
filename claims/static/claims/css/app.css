@@ -992,6 +992,7 @@ button.cred:hover .copy-hint { color: var(--accent); }
   font-family: var(--mono); font-size: 9.5px; color: var(--faint); font-style: normal;
 }
 .quality-row.two { grid-template-columns: repeat(2, 1fr); margin-top: 18px; padding-top: 16px; }
+.quality-row + .table { margin-top: 20px; }
 
 /* --- dispatch panel ------------------------------------------------------ */
 
@@ -1165,7 +1166,7 @@ a.tel:hover { color: var(--text); }
   .stats.five { grid-template-columns: repeat(3, 1fr); }
 }
 @media print {
-  .topbar, .photo-form, .note-form, .btn, .nav, .filters, .tabs-row, .board-head .tools, .scrim { display: none !important; }
+  .topbar, .photo-form, .note-form, .btn, .nav, .filters, .tabs-row, .board-head .tools, .scrim, #print-btn { display: none !important; }
   body { background: #fff; color: #111; }
   .card, .panel, .share-page { background: #fff; border-color: #ddd; }
   .board { display: none !important; }
@@ -1216,6 +1217,8 @@ a.tel:hover { color: var(--text); }
 }
 
 .queue-open td { background: rgba(251, 146, 60, .045); }
+.queue-sla-warn td { background: rgba(248, 113, 113, .07); }
+.queue-sla-warn td:first-child { box-shadow: inset 3px 0 0 var(--critical); }
 
 /* Pills on one line, the two buttons under them: four things side by side
    overflowed the cell and pushed the row past the edge of the table. */

@@ -14,11 +14,14 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 
+from . import roster
 from .models import (
     Claim,
     ClaimStatus,
     Conversation,
     Dispatch,
+    Handoff,
+    HandoffAttempt,
     IncidentType,
     Policyholder,
     VerificationAttempt,
@@ -274,6 +277,62 @@ def metrics(request):
         for value, label in Dispatch.Kind.choices
     ]
 
+    # --- who is answering the phone -----------------------------------------
+    # Per-attempt rather than a DB-side aggregate: the figure that matters is
+    # how long a *specific* ring took to be answered, which lives on the
+    # handoff it belongs to, not on the attempt row itself.
+    attempts = HandoffAttempt.objects.filter(
+        created_at__gte=since, dispatcher__isnull=False
+    ).select_related("dispatcher", "handoff")
+    per_dispatcher = {}
+    for attempt in attempts:
+        row = per_dispatcher.setdefault(
+            attempt.dispatcher_id,
+            {"dispatcher": attempt.dispatcher, "rung": 0, "answered": 0, "seconds": []},
+        )
+        row["rung"] += 1
+        if attempt.outcome == HandoffAttempt.Outcome.ANSWERED:
+            row["answered"] += 1
+            if attempt.handoff.connected_at:
+                row["seconds"].append(
+                    max(0, (attempt.handoff.connected_at - attempt.created_at).total_seconds())
+                )
+    on_call_ids = {person.id for person in roster.rostered()}
+    dispatcher_stats = sorted(
+        (
+            {
+                "id": dispatcher_id,
+                "name": row["dispatcher"].name,
+                "role": row["dispatcher"].get_role_display(),
+                "on_call": dispatcher_id in on_call_ids,
+                "rung": row["rung"],
+                "answered": row["answered"],
+                "answer_rate": percent(row["answered"], row["rung"]),
+                "avg_answer_seconds": (
+                    round(sum(row["seconds"]) / len(row["seconds"])) if row["seconds"] else None
+                ),
+            }
+            for dispatcher_id, row in per_dispatcher.items()
+        ),
+        key=lambda row: -row["rung"],
+    )
+    handoffs_in_window = Handoff.objects.filter(created_at__gte=since)
+    handoff_totals = handoffs_in_window.aggregate(
+        total=Count("id"),
+        answered=Count("id", filter=Q(status=Handoff.Status.DONE)),
+        no_answer=Count(
+            "id",
+            filter=Q(
+                status__in=[
+                    Handoff.Status.NO_ANSWER,
+                    Handoff.Status.ABANDONED,
+                    Handoff.Status.FAILED,
+                ]
+            ),
+        ),
+        after_hours=Count("id", filter=Q(status=Handoff.Status.AFTER_HOURS)),
+    )
+
     def delta(key):
         return head[key] - previous[key]
 
@@ -398,6 +457,14 @@ def metrics(request):
                 "median_turns": round(
                     quantile(sorted(len(c.turns or []) for c in calls), 0.5)
                 ),
+            },
+            "dispatchers": {
+                "handoffs": handoff_totals["total"],
+                "answered": handoff_totals["answered"],
+                "no_answer": handoff_totals["no_answer"],
+                "after_hours": handoff_totals["after_hours"],
+                "answer_rate": percent(handoff_totals["answered"], handoff_totals["total"]),
+                "people": dispatcher_stats,
             },
         }
     )

@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 
+from . import handoff as handoff_module
 from . import roster
 from .models import (
     AgentProfile,
@@ -28,6 +29,7 @@ from .models import (
     Dispatch,
     Dispatcher,
     Handoff,
+    HandoffAttempt,
     Policyholder,
     Shift,
     VendorCall,
@@ -997,6 +999,39 @@ class InsightsMetricsTests(TestCase):
         self.assertTrue(body["notable"])
         self.assertIn("Needed a second filing", body["notable"][0]["flags"])
         self.assertEqual(body["funnel"][1]["from_previous"], 100)
+
+    def test_metrics_reports_who_answered_the_phone(self):
+        priya = Dispatcher.objects.create(
+            name="Priya", email="priya@example.com", phone="+15550142001", order=1
+        )
+        call = Conversation.objects.create(session_id="sess_handoff_metrics")
+        handoff = Handoff.objects.create(conversation=call, caller_number="+15550190000")
+        HandoffAttempt.objects.create(
+            handoff=handoff,
+            dispatcher=priya,
+            outcome=HandoffAttempt.Outcome.NO_ANSWER,
+        )
+        answered_at = timezone.now()
+        HandoffAttempt.objects.create(
+            handoff=handoff,
+            dispatcher=priya,
+            outcome=HandoffAttempt.Outcome.ANSWERED,
+            created_at=answered_at - timedelta(seconds=12),
+        )
+        handoff.status = Handoff.Status.DONE
+        handoff.connected_at = answered_at
+        handoff.save(update_fields=["status", "connected_at"])
+
+        body = self.client.get(reverse("metrics"), {"days": "30"}).json()
+        stats = body["dispatchers"]
+        self.assertEqual(stats["handoffs"], 1)
+        self.assertEqual(stats["answered"], 1)
+        person = stats["people"][0]
+        self.assertEqual(person["name"], "Priya")
+        self.assertEqual(person["rung"], 2)
+        self.assertEqual(person["answered"], 1)
+        self.assertEqual(person["answer_rate"], 50)
+        self.assertEqual(person["avg_answer_seconds"], 12)
 
     def test_export_honours_the_days_window(self):
         Conversation.objects.create(session_id="sess_old", duration_seconds=10)
@@ -2109,6 +2144,139 @@ class VendorCallTests(TestCase):
                 )
 
 
+class TelephonyTests(TestCase):
+    """The Twilio client itself, not the callers who mock it away.
+
+    Every other test in this file patches `claims.telephony.account` or
+    `.configured` and never touches this module's own request-building — so a
+    broken auth header or a mishandled error body would pass the whole suite
+    and only show up against the real API, mid-transfer, with a caller on
+    the line. This is the one place that talks to `urllib` directly.
+    """
+
+    def _fake_urlopen(self, body=b'{"sid": "CA1"}'):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = body
+        return response
+
+    def test_not_configured_without_both_credentials(self):
+        from claims import telephony
+
+        with mock.patch.dict("os.environ", {"TWILIO_ACCOUNT_SID": "AC1"}, clear=True):
+            self.assertFalse(telephony.configured())
+        with mock.patch.dict(
+            "os.environ",
+            {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "tok"},
+            clear=True,
+        ):
+            self.assertTrue(telephony.configured())
+
+    def test_a_get_carries_basic_auth_and_no_body(self):
+        import base64
+
+        from claims import telephony
+
+        with mock.patch.dict(
+            "os.environ",
+            {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "tok"},
+        ), mock.patch(
+            "claims.telephony.request.urlopen", return_value=self._fake_urlopen()
+        ) as urlopen:
+            result = telephony.call("https://api.twilio.com/2010-04-01/Calls.json")
+
+        self.assertEqual(result, {"sid": "CA1"})
+        req = urlopen.call_args[0][0]
+        self.assertEqual(req.get_method(), "GET")
+        self.assertIsNone(req.data)
+        expected = "Basic " + base64.b64encode(b"AC1:tok").decode()
+        self.assertEqual(req.get_header("Authorization"), expected)
+
+    def test_a_form_posts_urlencoded_with_the_right_content_type(self):
+        from claims import telephony
+
+        with mock.patch.dict(
+            "os.environ", {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "tok"}
+        ), mock.patch(
+            "claims.telephony.request.urlopen", return_value=self._fake_urlopen()
+        ) as urlopen:
+            telephony.call(
+                "https://api.twilio.com/2010-04-01/Calls/CA1.json",
+                form={"Twiml": "<Response/>"},
+            )
+
+        req = urlopen.call_args[0][0]
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(req.data, b"Twiml=%3CResponse%2F%3E")
+        self.assertEqual(req.get_header("Content-type"), "application/x-www-form-urlencoded")
+
+    def test_an_empty_body_is_an_empty_dict_not_a_parse_error(self):
+        from claims import telephony
+
+        with mock.patch.dict(
+            "os.environ", {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "tok"}
+        ), mock.patch(
+            "claims.telephony.request.urlopen", return_value=self._fake_urlopen(body=b"")
+        ):
+            self.assertEqual(telephony.call("https://api.twilio.com/x"), {})
+
+    def test_an_http_error_becomes_a_telephony_error_with_the_host_stripped(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        from claims import telephony
+
+        error = HTTPError(
+            "https://api.twilio.com/2010-04-01/Calls/CA1.json",
+            404,
+            "Not Found",
+            {},
+            BytesIO(b'{"message": "no such call"}'),
+        )
+        with mock.patch.dict(
+            "os.environ", {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "tok"}
+        ), mock.patch("claims.telephony.request.urlopen", side_effect=error):
+            with self.assertRaises(telephony.TelephonyError) as caught:
+                telephony.call("https://api.twilio.com/2010-04-01/Calls/CA1.json")
+
+        exc = caught.exception
+        self.assertEqual(exc.status, 404)
+        self.assertIn("no such call", exc.body)
+        # The host is stripped — a Twilio error ends up in a log line, and a
+        # log line is not the place for even a well-known API host.
+        self.assertNotIn("api.twilio.com", str(exc))
+        self.assertIn("/2010-04-01/Calls/CA1.json", str(exc))
+
+    def test_a_network_failure_becomes_a_telephony_error_with_status_zero(self):
+        from urllib.error import URLError
+
+        from claims import telephony
+
+        with mock.patch.dict(
+            "os.environ", {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "tok"}
+        ), mock.patch(
+            "claims.telephony.request.urlopen",
+            side_effect=URLError("Connection refused"),
+        ):
+            with self.assertRaises(telephony.TelephonyError) as caught:
+                telephony.call("https://api.twilio.com/x")
+        self.assertEqual(caught.exception.status, 0)
+
+    def test_account_prefixes_the_path_with_this_accounts_sid(self):
+        from claims import telephony
+
+        with mock.patch.dict(
+            "os.environ", {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "tok"}
+        ), mock.patch(
+            "claims.telephony.request.urlopen", return_value=self._fake_urlopen()
+        ) as urlopen:
+            telephony.account("/Calls.json")
+        req = urlopen.call_args[0][0]
+        self.assertEqual(
+            req.full_url, "https://api.twilio.com/2010-04-01/Accounts/AC1/Calls.json"
+        )
+
+
 class RosterTests(TestCase):
     """Who is on the desk, which is the question a transfer starts with."""
 
@@ -2301,6 +2469,58 @@ class HandoffTests(TestCase):
             self.claim.notes.filter(body__icontains="out of hours").exists()
         )
 
+    def test_transfer_ready_names_each_reason_it_is_not(self):
+        from claims import handoff as handoff_lib
+
+        with self.settings(LIVE_TRANSFERS=False):
+            self.assertEqual(handoff_lib.transfer_ready(), (False, "LIVE_TRANSFERS is off"))
+        with self.settings(LIVE_TRANSFERS=True), mock.patch(
+            "claims.telephony.configured", return_value=False
+        ):
+            self.assertEqual(
+                handoff_lib.transfer_ready(), (False, "no Twilio credentials")
+            )
+        with self.settings(LIVE_TRANSFERS=True), mock.patch(
+            "claims.telephony.configured", return_value=True
+        ):
+            AgentProfile.objects.update_or_create(defaults={"public_base_url": ""})
+            self.assertEqual(
+                handoff_lib.transfer_ready(),
+                (False, "no public base URL to call back to"),
+            )
+
+    def test_an_empty_rota_with_no_fallback_is_not_a_silent_dead_end(self):
+        """The one case the whole feature exists to prevent: nobody rostered,
+        nobody to fall back to, and the caller must still be told something
+        true rather than the call just quietly going nowhere."""
+        Dispatcher.objects.all().update(phone="")
+        with self.settings(HANDOFF_FALLBACK_NUMBER=""):
+            body = self._ask_for_a_person().json()
+        handoff = Handoff.objects.get()
+        self.assertEqual(handoff.status, Handoff.Status.NO_ANSWER)
+        self.assertIn("call you back", body["message"])
+        self.assertTrue(
+            self.claim.notes.filter(body__icontains="Nobody took the transfer").exists()
+        )
+
+    def test_the_fallback_number_is_actually_texted_when_one_is_set(self):
+        with self.settings(HANDOFF_FALLBACK_NUMBER="+15550199999"), mock.patch(
+            "claims.notify.send_sms", return_value={"sent": True, "sid": "SM1"}
+        ) as send_sms, mock.patch("claims.roster.rostered", return_value=[]):
+            self._ask_for_a_person()
+        send_sms.assert_called_once()
+        to_number, body = send_sms.call_args[0]
+        self.assertEqual(to_number, "+15550199999")
+        self.assertIn(f"CV-{self.claim.id:05d}", body)
+        self.assertIn(self.call.caller_number, body)
+
+    def test_note_on_claim_is_a_noop_without_a_linked_claim(self):
+        from claims import handoff as handoff_lib
+
+        call = Conversation.objects.create(session_id="sess_no_claim")
+        handoff = Handoff.objects.create(conversation=call)
+        self.assertIsNone(handoff_lib.note_on_claim(handoff, "hello"))
+
     # --- with live transfers -------------------------------------------------
 
     def _live(self):
@@ -2343,6 +2563,51 @@ class HandoffTests(TestCase):
         # The callback has to be reachable from Twilio and addressed by token.
         self.assertIn(f"/api/twilio/dial/{handoff.token}/", form["Twiml"])
 
+    def test_a_failed_lookup_for_the_live_call_does_not_blow_up_the_handoff(self):
+        """Twilio erroring on the `/Calls.json` lookup is not the same as
+        finding no live call — both end up not dialled, but only one of them
+        should ever be silent about why."""
+        from claims import telephony
+
+        def broken_account(path, form=None, method=None):
+            raise telephony.TelephonyError("/Calls.json", 429, "rate limited")
+
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), mock.patch(
+            "claims.telephony.account", side_effect=broken_account
+        ):
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            body = self._ask_for_a_person().json()
+
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["transferring"])
+        handoff = Handoff.objects.get()
+        self.assertEqual(handoff.status, Handoff.Status.ABANDONED)
+
+    def test_an_unexpected_failure_while_ringing_tells_the_caller_rather_than_500ing(self):
+        """Not every way of talking to Twilio going wrong shows up as our own
+        TelephonyError — a malformed response, a bug in the TwiML we build,
+        anything. None of it may reach the caller as a raw 500."""
+
+        def account(path, form=None, method=None):
+            if path.startswith("/Calls.json"):
+                return {"calls": [{"sid": "CA123"}]}
+            raise RuntimeError("something unexpected")
+
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), mock.patch(
+            "claims.telephony.account", side_effect=account
+        ):
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            body = self._ask_for_a_person().json()
+
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["transferring"])
+        handoff = Handoff.objects.get()
+        self.assertEqual(handoff.status, Handoff.Status.FAILED)
+
     def test_nobody_answering_rings_the_next_person(self):
         """The overflow, which is the whole reason this is a queue."""
         sent, patched = self._twilio()
@@ -2382,6 +2647,9 @@ class HandoffTests(TestCase):
         self.assertEqual(handoff.status, Handoff.Status.DONE)
         self.assertIsNotNone(handoff.connected_at)
         self.assertTrue(self.claim.notes.filter(body__icontains="put through to Priya").exists())
+        # Somebody actually spoke to them — the board must stop asking for one.
+        self.assertFalse(Claim.objects.get(pk=self.claim.pk).needs_human)
+        self.assertFalse(Conversation.objects.get(pk=self.call.pk).needs_human)
 
     def test_running_out_of_people_tells_the_caller_rather_than_holding_them(self):
         sent, patched = self._twilio()
@@ -2401,6 +2669,21 @@ class HandoffTests(TestCase):
         self.assertEqual(handoff.status, Handoff.Status.NO_ANSWER)
         self.assertIn("call you back", last.content.decode())
         self.assertIn("<Hangup/>", last.content.decode())
+        # Nobody actually spoke to them — still owed one, not silently dropped.
+        self.assertTrue(Claim.objects.get(pk=self.claim.pk).needs_human)
+
+    def test_closing_a_handoff_by_hand_clears_needs_human(self):
+        """A dispatcher pressing Close is them saying it is dealt with."""
+        self._ask_for_a_person()
+        handoff = Handoff.objects.get()
+        self.assertTrue(Claim.objects.get(pk=self.claim.pk).needs_human)
+
+        self.client.post(
+            reverse("handoff-close", args=[handoff.id]),
+            data=json.dumps({"note": "Called them back myself."}),
+            content_type="application/json",
+        )
+        self.assertFalse(Claim.objects.get(pk=self.claim.pk).needs_human)
 
     def test_a_caller_who_hung_up_is_not_reported_as_transferred(self):
         sent, patched = self._twilio(sid="")
@@ -2460,6 +2743,88 @@ class HandoffTests(TestCase):
         self.assertEqual(handoff.dispatcher_id, self.priya.id)
         self.assertTrue(DeskAction.objects.filter(action="take_call").exists())
 
+    def _login_as_priya(self):
+        self.priya.set_password("longenough")
+        self.priya.save()
+        self.client.post("/login/", {"email": "priya@example.com", "password": "longenough"})
+
+    def test_taking_a_call_with_live_transfers_on_actually_redirects_it(self):
+        """The success path `test_taking_a_call_assigns_it_and_is_recorded`
+        does not reach: LIVE_TRANSFERS on, a live call to take hold of."""
+        self._ask_for_a_person()
+        handoff = Handoff.objects.get()
+        sent, patched = self._twilio()
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), patched:
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            with self.settings(DESK_AUTH=True):
+                self._login_as_priya()
+                body = self.client.post(reverse("handoff-take", args=[handoff.id])).json()
+
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["transferred"])
+        handoff.refresh_from_db()
+        self.assertEqual(handoff.status, Handoff.Status.RINGING)
+        self.assertEqual(handoff.provider_call_id, "CA123")
+        path, form = sent[-1]
+        self.assertEqual(path, "/Calls/CA123.json")
+        self.assertIn("<Number>+15550142001</Number>", form["Twiml"])
+
+    def test_taking_a_call_reports_a_telephony_failure_as_502(self):
+        self._ask_for_a_person()
+        handoff = Handoff.objects.get()
+        with self._live(), mock.patch(
+            "claims.telephony.configured", return_value=True
+        ), mock.patch(
+            "claims.telephony.account",
+            side_effect=[{"calls": [{"sid": "CA1"}]}, RuntimeError("Twilio is down")],
+        ):
+            with self.settings(DESK_AUTH=True):
+                self._login_as_priya()
+                response = self.client.post(reverse("handoff-take", args=[handoff.id]))
+
+        self.assertEqual(response.status_code, 502)
+        attempt = HandoffAttempt.objects.filter(handoff=handoff).latest("created_at")
+        self.assertEqual(attempt.outcome, HandoffAttempt.Outcome.FAILED)
+        self.assertIn("Twilio is down", attempt.detail)
+
+    def test_dial_status_only_answers_post(self):
+        handoff = Handoff.objects.create(conversation=self.call, caller_number="+15550190000")
+        response = self.client.get(reverse("handoff-dial-status", args=[handoff.token]))
+        self.assertEqual(response.status_code, 405)
+
+    def test_dial_status_never_leaves_the_caller_on_a_dead_line(self):
+        """Whatever goes wrong acting on it, Twilio still gets TwiML back —
+        never a 500, which is a caller holding a silent line."""
+        handoff = Handoff.objects.create(conversation=self.call, caller_number="+15550190000")
+        with mock.patch("claims.handoff.on_dial_status", side_effect=RuntimeError("boom")):
+            response = self.client.post(
+                reverse("handoff-dial-status", args=[handoff.token]),
+                {"DialCallStatus": "completed"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"<Hangup/>", response.content)
+        self.assertIn(b"Response", response.content)
+
+    def test_roster_feed_lists_dispatchers_with_their_shifts(self):
+        Shift.objects.create(dispatcher=self.priya, weekday=0, starts="08:00", ends="18:00")
+        body = self.client.get(reverse("roster-feed")).json()
+        names = {row["name"] for row in body["dispatchers"]}
+        self.assertEqual(names, {"Priya", "Marcus"})
+        priya_row = next(row for row in body["dispatchers"] if row["name"] == "Priya")
+        self.assertEqual(priya_row["phone"], "+15550142001")
+        self.assertEqual(len(priya_row["shifts"]), 1)
+
+    def test_desk_log_lists_recorded_actions_newest_first(self):
+        from claims.models_desk import record
+
+        record(self.priya, "sign_in")
+        record(self.marcus, "sign_in")
+        body = self.client.get(reverse("desk-log")).json()
+        actions = [row["who"] for row in body["actions"]]
+        self.assertEqual(actions[:2], ["Marcus", "Priya"])
+
     def test_the_queue_feed_carries_the_cover_the_board_shows(self):
         self._ask_for_a_person()
         body = self.client.get(reverse("handoff-feed")).json()
@@ -2467,6 +2832,48 @@ class HandoffTests(TestCase):
         self.assertFalse(body["roster"]["after_hours"])
         self.assertFalse(body["transfers"]["live"])
         self.assertEqual(body["transfers"]["why"], "LIVE_TRANSFERS is off")
+
+    def test_the_queue_feed_carries_the_ring_window_so_the_board_can_flag_it(self):
+        with self.settings(HANDOFF_RING_SECONDS=15):
+            body = self.client.get(reverse("handoff-feed")).json()
+        self.assertEqual(body["ring_seconds"], 15)
+
+    # --- when the dial-status callback never arrives -------------------------
+
+    def _stuck_ringing(self):
+        sent, patched = self._twilio()
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), patched:
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            self._ask_for_a_person()
+        handoff = Handoff.objects.get()
+        self.assertEqual(handoff.status, Handoff.Status.RINGING)
+        return handoff
+
+    def test_a_row_still_ringing_well_past_the_window_is_not_stale_yet(self):
+        handoff = self._stuck_ringing()
+        self.assertEqual(handoff_module.stale_ringing(), [])
+
+    def test_a_row_stuck_ringing_past_the_window_is_found_and_closed(self):
+        handoff = self._stuck_ringing()
+        HandoffAttempt.objects.filter(handoff=handoff).update(
+            created_at=timezone.now() - timedelta(seconds=200)
+        )
+        stale = handoff_module.stale_ringing()
+        self.assertEqual([h.id for h in stale], [handoff.id])
+
+        handoff_module.reap_stale(handoff)
+        handoff.refresh_from_db()
+        self.assertEqual(handoff.status, Handoff.Status.NO_ANSWER)
+        self.assertIn("no dial status", handoff.note)
+        last_attempt = handoff.attempts.order_by("-created_at").first()
+        self.assertEqual(last_attempt.outcome, HandoffAttempt.Outcome.FAILED)
+        self.assertTrue(
+            self.claim.notes.filter(body__icontains="Nobody took the transfer").exists()
+        )
+        # Reaped once — a second pass must not find it again.
+        self.assertEqual(handoff_module.stale_ringing(), [])
 
 
 class DuplicateClaimTests(TestCase):

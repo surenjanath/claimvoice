@@ -21,6 +21,9 @@
     return left + ' min left';
   }
 
+  const printBtn = document.getElementById('print-btn');
+  if (printBtn) printBtn.onclick = () => window.print();
+
   const mapEl = document.getElementById('share-map');
   if (mapEl && window.L) {
     const lat = Number(mapEl.dataset.lat), lng = Number(mapEl.dataset.lng);
