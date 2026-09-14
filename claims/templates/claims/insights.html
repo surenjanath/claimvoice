@@ -197,8 +197,10 @@
     metricsUrl: "{% url 'metrics' %}",
     exportUrl: "{% url 'export-calls' %}",
     dashboardUrl: "{% url 'dashboard' %}",
+    pulseUrl: "{% url 'pulse' %}",
   };
 </script>
 <script src="{% static 'claims/js/charts.js' %}"></script>
-<script src="{% static 'claims/js/insights.js' %}?v=prompt"></script>
+<script src="{% static 'claims/js/live.js' %}"></script>
+<script src="{% static 'claims/js/insights.js' %}?v=live"></script>
 {% endblock %}

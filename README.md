@@ -291,6 +291,53 @@ Attached: agent 8d70… answers +15551234567
 Then call it. Every step checks before it creates, so re-running is safe, and
 `--detach` unbinds the agent again.
 
+### Handing the caller to a person
+
+Ivy can take a claim. She cannot reassure somebody whose child is in the back
+seat, and she should not try. `request_human` is where the machine steps aside.
+
+Twilio owns the PSTN leg, so the live call can be taken back and pointed
+somewhere else with one REST call — no media server, still. Ringing down the
+rota is then TwiML: dial the first dispatcher with a timeout, and when Twilio
+reports no answer it asks what to do next, which is dial the second. That is
+the whole queue. No state machine of ours, no polling, and it survives the web
+process restarting mid-call.
+
+```sh
+python manage.py create_dispatcher --name "Priya R" --email priya@example.com \
+    --phone +15550142001 --shifts "mon-fri 08:00-18:00"
+```
+
+```sh
+# .env
+LIVE_TRANSFERS=1
+HANDOFF_FALLBACK_NUMBER=+15550142999   # rung when the rota is empty or exhausted
+HANDOFF_RING_SECONDS=20                # per phone, before moving on
+HANDOFF_MAX_ATTEMPTS=3                 # people, before offering a call back
+```
+
+**Creating the first dispatcher switches the desk login from one shared
+password to per-person accounts.** That is the point — a claim closed by
+"Dispatcher" answers no question worth asking six months later — but everyone
+else needs an account before they can get back in.
+
+A rota with nothing in it means the desk is always open, so an existing
+deployment does not discover at 2am that it has silently gone dark. Once
+somebody writes a shift, shifts govern. `fri 22:00-06:00` is the night shift,
+not an empty set. Somebody with no phone number on file is on the board but
+never rung, because a silent leg in the escalation is worse than not being in
+it at all.
+
+Without `LIVE_TRANSFERS` nothing is dialled: the handoff is still recorded, the
+**Waiting** tab on the board still lights up, and a dispatcher presses *Take
+this call* and rings them back. What Ivy says is true either way — she offers a
+call back rather than telling somebody to hold for a transfer that is not
+coming.
+
+When the rota is empty or everybody has been tried, the caller is told so in
+words and the fallback number is texted. A queue that overflows into silence is
+not a queue.
+
 Two things to know: the trunk takes ownership of the number, so any Voice webhook
 set on the number itself stops applying; and Twilio bills the inbound minutes
 while AssemblyAI bills the session, so a live number draws on both accounts.
@@ -305,7 +352,9 @@ python manage.py seed_policies                  # the book of policyholders
 python manage.py seed_claims --count 12 --clear # claims, each with the call it came from
 python manage.py sync_calls [--prune]           # pull session metadata; --prune drops empty call rows
 python manage.py connect_phone [--detach]       # attach the agent to a Twilio number
+python manage.py create_dispatcher              # somebody who can log in and be rung
 python manage.py test
+node tools/check_live.mjs                       # the page heartbeat, without a browser
 ```
 
 ## How it fits together
@@ -326,6 +375,16 @@ itself, which is why the agent behaves identically on a phone number.
 `agent.json` is the agent: persona, greeting, voice, turn taking and the
 `log_claim` schema. It is the seed for the `AgentProfile` row that `/settings/`
 edits, so the file stays a readable default you can commit and reset to.
+
+### How the pages stay current
+
+Every open page polls one endpoint, `/api/pulse/`: a few counts and max ids, a
+few hundred bytes, a fixed handful of aggregates however much is on the board.
+Each widget names the counters it depends on, and only refetches its own feed
+when one of them moves — so a quiet dispatcher board costs a heartbeat rather
+than three feeds every two seconds. The heartbeat stops when the tab is hidden,
+backs off when the server is unreachable, and catches up the moment the tab
+comes back. `node tools/check_live.mjs` proves all four without a browser.
 
 ## The one API constraint that bites
 

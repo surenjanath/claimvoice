@@ -1200,3 +1200,41 @@ a.tel:hover { color: var(--text); }
 .emergency-row a { color: var(--critical); font-family: var(--mono); }
 .emergency-row span { color: var(--faint); font-size: 12px; }
 .emergency .tiny { color: var(--faint); font-size: 11.5px; margin: 10px 0 0; }
+
+/* --- the queue ------------------------------------------------------------
+   A row here is a person on hold. Everything is sized so the two things that
+   matter — how long they have waited, and what has been tried — read first. */
+
+.pill.bad { color: var(--critical); border-color: rgba(248, 113, 113, .35); }
+.pill.quiet { color: var(--faint); border-color: var(--line); }
+
+.tab-badge {
+  display: inline-grid; place-items: center;
+  min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px;
+  border-radius: 999px; background: var(--high); color: #1b1205;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+}
+
+.queue-open td { background: rgba(251, 146, 60, .045); }
+
+/* Pills on one line, the two buttons under them: four things side by side
+   overflowed the cell and pushed the row past the edge of the table. */
+.queue-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.queue-state, .queue-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.queue-actions .btn.small { height: 28px; padding: 0 12px; font-size: 12px; }
+
+.tried-cell { line-height: 1.5; }
+.tried {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  margin: 0 6px 2px 0; font-size: 12px; color: var(--muted);
+}
+.tried small { font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; }
+.tried.answered { color: var(--low); }
+.tried.no_answer small, .tried.busy small, .tried.failed small { color: var(--high); }
+.tried.simulated small { color: var(--faint); }
+
+.cover-note { margin-left: auto; font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+.cover-note.bad { color: var(--critical); }
+.cover-note.warn { color: var(--high); }
+
+.muted.block { display: block; margin-top: 2px; font-size: 11.5px; }

@@ -1,23 +1,27 @@
 /* The dispatcher board.
  *
- * Two views over the same poll: the claims that came out of calls, and the
- * calls themselves. Claims poll incrementally — once the full list is in, it
- * only asks for rows newer than the highest id it has seen, so the steady
- * state is an empty response and the table only moves when something lands.
+ * Views over one heartbeat: the claims that came out of calls, the calls
+ * themselves, and the trucks. Nothing here is on a timer of its own — Live
+ * polls a few counters, and each feed is refetched only when the counters it
+ * named have moved. Claims fetch incrementally where they can, asking only for
+ * rows newer than the highest id held, so the steady state is an empty
+ * response and the table only moves when something lands.
  */
 (() => {
   const $ = (id) => document.getElementById(id);
   const CFG = window.CLAIMVOICE;
-  const POLL_MS = 2000;
   let vendorBook = [];
 
   let claims = [];
   let conversations = [];
   let dispatches = [];
+  let queue = [];
+  let cover = null;
   let latestId = 0;
   let filter = 'all';
   let convFilter = 'all';
   let dispatchFilter = 'open';
+  let queueFilter = 'open';
   let view = 'claims';
   let showUnpinned = false;
   let term = '';
@@ -38,6 +42,12 @@
   }
 
   const reference = (id) => 'CV-' + String(id).padStart(5, '0');
+
+  // A claim's photos are addressed by its share token, not its row id — the
+  // caller uploading from the roadside link and the dispatcher looking at the
+  // same claim go through one route. /c/<token>/ is where the desk has it.
+  const shareToken = (claim) =>
+    String(claim.share_path || '').split('/').filter(Boolean)[1] || '';
   const clock = (seconds) => {
     const whole = Math.round(seconds || 0);
     return Math.floor(whole / 60) + ':' + String(whole % 60).padStart(2, '0');
@@ -249,6 +259,176 @@
   }
 
   // --- drawer ---------------------------------------------------------------
+
+  // --- the queue ------------------------------------------------------------
+  // A row here is a person on hold, so it leads with how long they have been
+  // holding and what has been tried, not with the claim.
+
+  function queueMatches(row) {
+    return queueFilter === 'all' ? true : row.open;
+  }
+
+  function waited(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h`;
+  }
+
+  const QUEUE_REASONS = {
+    caller_request: 'Asked for a person',
+    caller_upset: 'Caller was distressed',
+    dispatcher: 'Raised by a dispatcher',
+    no_tow_available: 'No recovery operator would take it',
+    tow_overdue: 'Tow ran late',
+    could_not_verify: 'Could not verify who they were',
+    complaint: 'Complaint',
+  };
+
+  const QUEUE_TONE = {
+    waiting: 'warn',
+    ringing: 'warn',
+    connected: 'ok',
+    done: 'ok',
+    no_answer: 'bad',
+    after_hours: 'bad',
+    abandoned: 'bad',
+    failed: 'bad',
+  };
+
+  function triedCell(row) {
+    const attempts = row.attempts || [];
+    if (!attempts.length) return '<span class="muted">—</span>';
+    return attempts
+      .map((a) => {
+        const who = escape(a.dispatcher_name || 'fallback');
+        return `<span class="tried ${escape(a.outcome)}">${who}<small>${escape(a.outcome_label)}</small></span>`;
+      })
+      .join('');
+  }
+
+  function queueRow(row) {
+    const tr = document.createElement('tr');
+    tr.className = row.open ? 'queue-open' : '';
+    const reference = row.claim_reference
+      ? `<a href="#claim-${row.claim_id}">${escape(row.claim_reference)}</a>`
+      : '<span class="muted">no claim</span>';
+    tr.innerHTML = `
+      <td class="mono">${reference}</td>
+      <td>${escape(row.caller_name || 'Unidentified')}</td>
+      <td class="mono">${escape(row.caller_number || '—')}</td>
+      <td>${escape(QUEUE_REASONS[row.reason] || row.reason || 'Asked for a person')}
+        ${row.note ? `<small class="muted block">${escape(row.note)}</small>` : ''}</td>
+      <td class="tried-cell">${triedCell(row)}</td>
+      <td class="mono">${waited(row.waited_seconds)}</td>
+      <td class="queue-actions"></td>`;
+
+    // Two lines in the cell: what it is, then what can be done about it.
+    // All four side by side pushed the row past the edge of the table.
+    const actions = tr.querySelector('.queue-actions');
+    const state = document.createElement('span');
+    state.className = 'queue-state';
+    const pill = document.createElement('span');
+    pill.className = `pill ${QUEUE_TONE[row.status] || ''}`;
+    pill.textContent = row.status_label;
+    state.append(pill);
+    if (row.simulated) {
+      const sim = document.createElement('span');
+      sim.className = 'pill quiet';
+      sim.textContent = 'not dialled';
+      state.append(sim);
+    }
+    actions.append(state);
+    if (row.open) {
+      const buttons = document.createElement('span');
+      buttons.className = 'queue-buttons';
+      const take = document.createElement('button');
+      take.className = 'btn small';
+      take.type = 'button';
+      take.textContent = 'Take this call';
+      take.onclick = () => takeCall(row, take);
+      const close = document.createElement('button');
+      close.className = 'btn small quiet';
+      close.type = 'button';
+      close.textContent = 'Done';
+      close.onclick = () => closeCall(row, close);
+      buttons.append(take, close);
+      actions.append(buttons);
+    }
+    return tr;
+  }
+
+  async function takeCall(row, button) {
+    if (!CFG.takeCallUrl) return;
+    button.disabled = true;
+    button.textContent = 'Taking…';
+    try {
+      const res = await fetch(CFG.takeCallUrl.replace('__ID__', row.id), {
+        method: 'POST',
+        headers: { 'X-CSRFToken': CFG.csrfToken, Accept: 'application/json' },
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        toast(body.error || 'Could not take that call.');
+        button.disabled = false;
+        button.textContent = 'Take this call';
+        return;
+      }
+      toast(
+        body.transferred
+          ? 'Your phone is ringing — the caller is being put through.'
+          : 'Assigned to you. The call was not live, so ring them back.'
+      );
+      // Taking a call that could not be transferred moves nothing the
+      // heartbeat counts, so put the answer straight back on the row.
+      if (body.handoff) {
+        const at = queue.findIndex((row) => row.id === body.handoff.id);
+        if (at > -1) queue[at] = body.handoff;
+        render();
+      }
+      Live.poke();
+    } catch (error) {
+      toast('Could not reach the server.');
+      button.disabled = false;
+      button.textContent = 'Take this call';
+    }
+  }
+
+  async function closeCall(row, button) {
+    if (!CFG.closeCallUrl) return;
+    button.disabled = true;
+    try {
+      await fetch(CFG.closeCallUrl.replace('__ID__', row.id), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': CFG.csrfToken,
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ note: 'Handled on the board.' }),
+      });
+      Live.poke();
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function paintCover() {
+    const note = $('cover-note');
+    if (!note || !cover) return;
+    const on = cover.roster.reachable || [];
+    if (cover.roster.after_hours) {
+      note.textContent = 'Out of hours — nobody is rostered.';
+      note.className = 'cover-note mono bad';
+    } else if (!on.length) {
+      note.textContent = 'On call, but nobody has a number on file.';
+      note.className = 'cover-note mono bad';
+    } else {
+      note.textContent =
+        `On call: ${on.map((p) => p.name).join(', ')}` +
+        (cover.transfers.live ? '' : ` · transfers off (${cover.transfers.why})`);
+      note.className = `cover-note mono ${cover.transfers.live ? '' : 'warn'}`;
+    }
+  }
 
   function openDrawer(title) {
     if (drawerAudio) {
@@ -579,7 +759,7 @@
       }
     };
 
-    fetch(CFG.photosUrl.replace('__ID__', claim.id))
+    fetch(CFG.photosUrl.replace('__TOKEN__', shareToken(claim)))
       .then((res) => res.json())
       .then((body) => paint(body.photos || []))
       .catch(() => paint([]));
@@ -609,7 +789,7 @@
       const button = form.querySelector('button');
       button.disabled = true;
       try {
-        const res = await fetch(CFG.photoUploadUrl.replace('__ID__', claim.id), {
+        const res = await fetch(CFG.photoUploadUrl.replace('__TOKEN__', shareToken(claim)), {
           method: 'POST',
           headers: { 'X-CSRFToken': CFG.csrfToken, Accept: 'application/json' },
           body: data,
@@ -621,7 +801,7 @@
           return;
         }
         form.reset();
-        const feed = await fetch(CFG.photosUrl.replace('__ID__', claim.id)).then((r) => r.json());
+        const feed = await fetch(CFG.photosUrl.replace('__TOKEN__', shareToken(claim))).then((r) => r.json());
         paint(feed.photos || []);
         const index = claims.findIndex((c) => c.id === claim.id);
         if (index > -1) claims[index].photo_count = (feed.photos || []).length;
@@ -765,6 +945,9 @@
         const index = claims.findIndex((c) => c.id === body.claim.id);
         if (index > -1) claims[index] = body.claim;
         render();
+        // The dispatch board is a different subscriber; do not make it wait
+        // out the beat to learn about a truck raised here.
+        Live.poke();
       } catch (exception) {
         error.textContent = 'Could not reach the server.';
         error.hidden = false;
@@ -882,6 +1065,7 @@
         }
       } finally {
         load();
+        Live.poke();
       }
     };
 
@@ -1052,10 +1236,27 @@
       $('dispatch-count').textContent = dispatches.length
         ? `${visible.length} of ${dispatches.length} on the board`
         : '';
+    } else if (view === 'queue') {
+      const visible = queue.filter(queueMatches);
+      $('queue-rows').replaceChildren(...visible.map(queueRow));
+      $('queue-empty').hidden = visible.length > 0;
+      $('queue-count').textContent = queue.length
+        ? `${visible.length} of ${queue.length}`
+        : '';
+      paintCover();
     } else if (view === 'map') {
       paintMap();
     }
+    paintQueueBadge();
     paintHandoffBanner();
+  }
+
+  function paintQueueBadge() {
+    const badge = $('queue-badge');
+    if (!badge) return;
+    const waiting = queue.filter((row) => row.open).length;
+    badge.hidden = waiting === 0;
+    badge.textContent = waiting;
   }
 
   function applyStats(stats) {
@@ -1069,6 +1270,16 @@
   function paintHandoffBanner() {
     const banner = $('handoff-banner');
     if (!banner) return;
+    // Somebody on hold right now outranks a flag on a row, and is a different
+    // number: the queue is people mid-call, the flags are people owed a call.
+    const holding = queue.filter((row) => row.open).length;
+    if (holding) {
+      banner.hidden = false;
+      $('handoff-text').textContent = holding === 1
+        ? 'A caller is on hold for a person.'
+        : `${holding} callers are on hold for a person.`;
+      return;
+    }
     const waitingClaims = claims.filter((claim) => claim.needs_human);
     const waitingCalls = conversations.filter((call) => call.needs_human && !call.claim_id);
     const total = waitingClaims.length + waitingCalls.length;
@@ -1083,7 +1294,7 @@
         ? 'A live call is waiting for a person.'
         : `${waitingCalls.length} calls are waiting for a person.`;
     } else {
-      $('handoff-text').textContent = `${total} handoffs are waiting for a person.`;
+      $('handoff-text').textContent = `${total} claims and calls are owed a person.`;
     }
   }
 
@@ -1256,6 +1467,7 @@
     $('view-claims').hidden = name !== 'claims';
     $('view-conversations').hidden = name !== 'conversations';
     if ($('view-dispatches')) $('view-dispatches').hidden = name !== 'dispatches';
+    if ($('view-queue')) $('view-queue').hidden = name !== 'queue';
     if ($('view-map')) $('view-map').hidden = name !== 'map';
     render();
   }
@@ -1286,6 +1498,10 @@
       showView('map');
       return;
     }
+    if (raw === 'queue' || raw === 'waiting') {
+      showView('queue');
+      return;
+    }
     if (raw.startsWith('policy-')) {
       const code = raw.slice(7);
       if ($('search')) $('search').value = code;
@@ -1294,43 +1510,67 @@
     }
   }
 
-  async function poll() {
-    try {
-      const url = latestId ? `${CFG.feedUrl}?since=${latestId}` : CFG.feedUrl;
-      const [feed, convs, fleet] = await Promise.all([
-        fetch(url).then((res) => res.json()),
-        fetch(CFG.conversationsUrl).then((res) => res.json()),
-        CFG.dispatchUrl
-          ? fetch(CFG.dispatchUrl).then((res) => res.json()).catch(() => ({ dispatches: [] }))
-          : Promise.resolve({ dispatches: [] }),
-      ]);
+  const digest = (pulse, key) => JSON.stringify(pulse ? pulse[key] : null);
 
-      applyStats(feed.stats);
-      $('last-update').textContent = new Date().toLocaleTimeString();
-      conversations = convs.conversations;
-      dispatches = fleet.dispatches || [];
+  // Three feeds, each fetched only when the heartbeat says its half of the
+  // board moved. Errors are left to propagate: Live retries a subscriber whose
+  // fetch failed on the next beat.
+  async function loadClaims(pulse, seen) {
+    // Claims above the highest id we hold can arrive on their own, and that is
+    // the common case — an empty response. But a note, a photo, a vendor call
+    // or a handoff changes a row we already have, and only a full read shows
+    // those, so ask for everything whenever one of them moved.
+    const touchedExisting =
+      !seen ||
+      digest(pulse, 'notes') !== digest(seen, 'notes') ||
+      digest(pulse, 'photos') !== digest(seen, 'photos') ||
+      digest(pulse, 'vendor_calls') !== digest(seen, 'vendor_calls') ||
+      pulse.claims.handoffs !== seen.claims.handoffs;
 
-      if (feed.incremental) {
-        if (feed.claims.length) {
-          feed.claims.forEach((claim) => fresh.add(claim.id));
-          claims = feed.claims.concat(claims);
-          setTimeout(() => { feed.claims.forEach((c) => fresh.delete(c.id)); }, 1600);
-          announce(feed.claims.length, feed.claims);
-        }
-      } else {
-        claims = feed.claims;
-      }
-      latestId = Math.max(latestId, feed.latest_id || 0);
-      render();
-      if (!hashReady) {
-        hashReady = true;
-        applyHash();
-      }
-    } catch (error) {
-      $('last-update').textContent = 'reconnecting…';
-    } finally {
-      setTimeout(poll, POLL_MS);
+    const url = latestId && !touchedExisting ? `${CFG.feedUrl}?since=${latestId}` : CFG.feedUrl;
+    const feed = await fetch(url).then((res) => res.json());
+
+    applyStats(feed.stats);
+    const arrived = feed.incremental
+      ? feed.claims
+      : feed.claims.filter((claim) => latestId && claim.id > latestId);
+    if (feed.incremental) {
+      claims = feed.claims.concat(claims);
+    } else {
+      claims = feed.claims;
     }
+    if (arrived.length) {
+      arrived.forEach((claim) => fresh.add(claim.id));
+      setTimeout(() => { arrived.forEach((claim) => fresh.delete(claim.id)); }, 1600);
+      announce(arrived.length, arrived);
+    }
+    latestId = Math.max(latestId, feed.latest_id || 0);
+    render();
+    if (!hashReady) {
+      hashReady = true;
+      applyHash();
+    }
+  }
+
+  async function loadConversations() {
+    const body = await fetch(CFG.conversationsUrl).then((res) => res.json());
+    conversations = body.conversations || [];
+    render();
+  }
+
+  async function loadQueue() {
+    if (!CFG.queueUrl) return;
+    const body = await fetch(CFG.queueUrl).then((res) => res.json());
+    queue = body.handoffs || [];
+    cover = { roster: body.roster || {}, transfers: body.transfers || {} };
+    render();
+  }
+
+  async function loadDispatches() {
+    if (!CFG.dispatchUrl) return;
+    const body = await fetch(CFG.dispatchUrl).then((res) => res.json());
+    dispatches = body.dispatches || [];
+    render();
   }
 
   // A claim arriving mid-demo should be obvious even if the reader is looking
@@ -1369,6 +1609,15 @@
     toast._hide = setTimeout(() => { toast.hidden = true; }, 5000);
   }
 
+  function toast(message) {
+    const el = $('claim-toast');
+    if (!el) return;
+    el.hidden = false;
+    el.textContent = message;
+    clearTimeout(el._hide);
+    el._hide = setTimeout(() => { el.hidden = true; }, 5000);
+  }
+
   document.querySelectorAll('.tab-btn').forEach((tab) => {
     tab.onclick = () => showView(tab.dataset.view);
   });
@@ -1391,6 +1640,14 @@
     };
   });
 
+  document.querySelectorAll('[data-qfilter]').forEach((chip) => {
+    chip.onclick = () => {
+      queueFilter = chip.dataset.qfilter;
+      document.querySelectorAll('[data-qfilter]').forEach((c) => c.classList.toggle('on', c === chip));
+      render();
+    };
+  });
+
   document.querySelectorAll('[data-cfilter]').forEach((chip) => {
     chip.onclick = () => {
       convFilter = chip.dataset.cfilter;
@@ -1401,6 +1658,14 @@
 
   if ($('handoff-jump')) {
     $('handoff-jump').onclick = () => {
+      // Somebody actually on hold outranks a flag on a row: the queue is where
+      // there is something to do about it.
+      if (queue.some((row) => row.open)) {
+        queueFilter = 'open';
+        document.querySelectorAll('[data-qfilter]').forEach((c) => c.classList.toggle('on', c.dataset.qfilter === 'open'));
+        showView('queue');
+        return;
+      }
       const waitingCalls = conversations.filter((call) => call.needs_human && !call.claim_id);
       const waitingClaims = claims.filter((claim) => claim.needs_human);
       if (waitingCalls.length && !waitingClaims.length) {
@@ -1442,6 +1707,7 @@
       $('search').focus();
     }
     if (event.key === 'm') showView('map');
+    if (event.key === 'w') showView('queue');
     if (event.key === 'd') showView('dispatches');
     if (event.key === 'c') showView('claims');
   });
@@ -1500,6 +1766,7 @@
           announce(1, [body.claim]);
           render();
           openClaim(body.claim);
+          Live.poke();
         }
       } finally {
         inject.disabled = false;
@@ -1507,5 +1774,22 @@
     };
   }
 
-  poll();
+  // What each view actually depends on. Notes, photos and vendor calls ride
+  // inside the claim rows, so a new one of any of them leaves the board stale
+  // even though no claim was filed; a claim landing changes a call row too,
+  // because that is where its filed/not-filed mark comes from.
+  Live.watch(['claims', 'notes', 'photos', 'vendor_calls'], loadClaims, { immediate: true });
+  Live.watch(['conversations', 'claims'], loadConversations, { immediate: true });
+  Live.watch(['dispatches'], loadDispatches, { immediate: true });
+  // A handoff opens when a caller asks for a person, and closes when somebody
+  // answers — neither of which adds a claim, a call or a truck.
+  Live.watch(['handoffs'], loadQueue, { immediate: true });
+
+  Live.onStatus(({ ok, at, paused }) => {
+    const label = $('last-update');
+    if (!label) return;
+    if (paused) label.textContent = 'paused';
+    else if (!ok) label.textContent = 'reconnecting…';
+    else if (at) label.textContent = at.toLocaleTimeString();
+  });
 })();

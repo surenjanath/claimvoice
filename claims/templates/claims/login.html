@@ -6,20 +6,40 @@
 {% block main %}
 <div class="login-card card">
   <h1>Dispatcher desk</h1>
-  <p>Directory, the board, Insights and Agent sit behind this password. Talk to Ivy and claim share links stay public.</p>
+  <p>Directory, the board, Insights and Agent sit behind this. Talk to Ivy and claim share links stay public.</p>
   <form method="post">
     {% csrf_token %}
     <input type="hidden" name="next" value="{{ next }}">
-    <div class="field">
-      <label for="name">Your name</label>
-      <input id="name" type="text" name="name" autocomplete="name" placeholder="Alex" maxlength="40">
-    </div>
-    <div class="field">
-      <label for="password">Password</label>
-      <input id="password" type="password" name="password" autocomplete="current-password" autofocus>
-    </div>
-    <button type="submit" class="btn">Log in</button>
+    {% if by_account %}
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" name="email" autocomplete="username" placeholder="you@example.com" autofocus required>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn">Log in</button>
+    {% else %}
+      <div class="field">
+        <label for="name">Your name</label>
+        <input id="name" type="text" name="name" autocomplete="name" placeholder="Alex" maxlength="40">
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" autocomplete="current-password" autofocus>
+      </div>
+      <button type="submit" class="btn">Log in</button>
+    {% endif %}
   </form>
-  <p class="hint">Set <code>DESK_PASSWORD</code> in <code>.env</code>. Default is <code>claimvoice</code>.</p>
+  {% if by_account %}
+    <p class="hint">Ask a supervisor, or run <code>python manage.py create_dispatcher</code>.</p>
+  {% else %}
+    <p class="hint">
+      Set <code>DESK_PASSWORD</code> in <code>.env</code>. Default is <code>claimvoice</code>.<br>
+      For a desk that takes real calls, create people instead:
+      <code>python manage.py create_dispatcher</code> — then a transfer has somebody to ring.
+    </p>
+  {% endif %}
 </div>
 {% endblock %}

@@ -37,6 +37,7 @@
     <button class="tab-btn on" data-view="claims">Claims</button>
     <button class="tab-btn" data-view="conversations">Conversations</button>
     <button class="tab-btn" data-view="dispatches">Dispatches</button>
+    <button class="tab-btn" data-view="queue">Waiting <span class="tab-badge" id="queue-badge" hidden>0</span></button>
     <button class="tab-btn" data-view="map">Map</button>
     <input type="search" id="search" placeholder="Search policy, name, location…" autocomplete="off">
   </div>
@@ -145,6 +146,34 @@
     </div>
   </section>
 
+  <section id="view-queue" hidden>
+    <div class="filters">
+      <button class="chip on" data-qfilter="open">Waiting</button>
+      <button class="chip" data-qfilter="all">All today</button>
+      <span class="cover-note mono" id="cover-note"></span>
+      <span class="count" id="queue-count"></span>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="width:96px">Claim</th>
+          <th style="width:170px">Caller</th>
+          <th style="width:150px">Number</th>
+          <th>Why</th>
+          <th style="width:186px">Tried</th>
+          <th style="width:74px">Waited</th>
+          <th style="width:250px">Status</th>
+        </tr>
+      </thead>
+      <tbody id="queue-rows"></tbody>
+    </table>
+
+    <div class="board-empty" id="queue-empty">
+      <p>Nobody is waiting for a person. A caller asking for one lands here mid-call.</p>
+    </div>
+  </section>
+
   <section id="view-map" hidden>
     <div class="filters">
       <span class="map-legend">
@@ -191,9 +220,13 @@
     notifyUrl: "/api/claims/__ID__/notify/",
     assignUrl: "/api/claims/__ID__/assign/",
     noteUrl: "/api/claims/__ID__/notes/",
-    photoUploadUrl: "/api/claims/__ID__/photos/upload/",
-    photosUrl: "/api/claims/__ID__/photos/",
+    photoUploadUrl: "/api/share/__TOKEN__/photos/upload/",
+    photosUrl: "/api/share/__TOKEN__/photos/",
     vendorsUrl: "{% url 'vendor-feed' %}",
+    pulseUrl: "{% url 'pulse' %}",
+    queueUrl: "{% url 'handoff-feed' %}",
+    takeCallUrl: "/api/handoffs/__ID__/take/",
+    closeCallUrl: "/api/handoffs/__ID__/close/",
     demoUrl: "{% url 'demo-claim' %}",
     deskName: "{{ desk_name|default:'Dispatcher'|escapejs }}",
     csrfToken: "{{ csrf_token }}"
@@ -202,5 +235,6 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <div class="claim-toast" id="claim-toast" hidden></div>
-<script src="{% static 'claims/js/dashboard.js' %}?v=align2"></script>
+<script src="{% static 'claims/js/live.js' %}"></script>
+<script src="{% static 'claims/js/dashboard.js' %}?v=live"></script>
 {% endblock %}

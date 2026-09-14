@@ -332,12 +332,32 @@ def _link_orphan_claims(conversation):
 
 @require_GET
 def conversation_feed(request):
-    queryset = Conversation.objects.select_related("policyholder").prefetch_related("claims")
+    queryset = Conversation.objects.select_related("policyholder").prefetch_related(
+        "claims", "claims__policyholder"
+    )
     if request.GET.get("verified") == "1":
         queryset = queryset.filter(verified=True)
-    return JsonResponse(
-        {"conversations": [c.as_dict() for c in queryset[:100]]}
+    rows = list(queryset[:100])
+    _attach_claim_counts([c.policyholder for c in rows if c.policyholder_id])
+    return JsonResponse({"conversations": [c.as_dict() for c in rows]})
+
+
+def _attach_claim_counts(holders):
+    """One grouped count for the whole page instead of one per row."""
+    from django.db.models import Count
+
+    from .models import Claim
+
+    ids = {h.id for h in holders}
+    if not ids:
+        return
+    counts = dict(
+        Claim.objects.filter(policyholder_id__in=ids)
+        .values_list("policyholder_id")
+        .annotate(total=Count("id"))
     )
+    for holder in holders:
+        holder.claim_count = counts.get(holder.id, 0)
 
 
 @csrf_exempt
@@ -627,10 +647,28 @@ def request_human(request):
         claim.needs_human = True
         claim.handoff_reason = reason
         claim.save(update_fields=["needs_human", "handoff_reason"])
+
+    # The flag lights the board. This puts the caller through.
+    from .handoff import AFTER_HOURS_LINE, HOLD_LINE, open_handoff
+    from .models import Handoff
+
+    handoff = open_handoff(conversation, reason=reason, claim=claim)
+    spoken = {
+        Handoff.Status.RINGING: HOLD_LINE,
+        Handoff.Status.AFTER_HOURS: AFTER_HOURS_LINE,
+    }.get(
+        handoff.status,
+        "A dispatcher has your claim and will call you straight back.",
+    )
     return JsonResponse(
         {
             "ok": True,
-            "message": "An adjuster is being pulled in now. Stay on the line.",
+            # What Ivy says next. She is still holding the call until the
+            # transfer takes, so this has to be true either way.
+            "message": spoken,
             "handoff_reason": reason,
+            "handoff_id": handoff.id,
+            "handoff_status": handoff.status,
+            "transferring": handoff.status == Handoff.Status.RINGING,
         }
     )

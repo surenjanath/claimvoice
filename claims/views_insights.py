@@ -123,28 +123,43 @@ def metrics(request):
                 seen = True
         calls_with_rejection += bool(seen)
 
-    checks = VerificationAttempt.objects.filter(created_at__gte=since)
-    checks_total = checks.count()
-    checks_passed = checks.filter(passed=True).count()
+    checks = VerificationAttempt.objects.filter(created_at__gte=since).aggregate(
+        total=Count("id"), passed=Count("id", filter=Q(passed=True))
+    )
+    checks_total, checks_passed = checks["total"], checks["passed"]
 
+    # One pass over claims for the bands and the incident mix, instead of a
+    # query per bar. This endpoint is polled, so the difference is per-visitor
+    # per-refresh, not once.
+    band_counts = claims.aggregate(
+        low=Count("id", filter=Q(risk_score__lt=25)),
+        medium=Count("id", filter=Q(risk_score__gte=25, risk_score__lt=50)),
+        high=Count("id", filter=Q(risk_score__gte=50, risk_score__lt=75)),
+        critical=Count("id", filter=Q(risk_score__gte=75)),
+        **{
+            f"type_{value}": Count("id", filter=Q(incident_type=value))
+            for value, _ in IncidentType.choices
+        },
+    )
     risk_bands = [
-        ("Low", claims.filter(risk_score__lt=25).count()),
-        ("Medium", claims.filter(risk_score__gte=25, risk_score__lt=50).count()),
-        ("High", claims.filter(risk_score__gte=50, risk_score__lt=75).count()),
-        ("Critical", claims.filter(risk_score__gte=75).count()),
+        ("Low", band_counts["low"]),
+        ("Medium", band_counts["medium"]),
+        ("High", band_counts["high"]),
+        ("Critical", band_counts["critical"]),
     ]
-
     by_type = [
-        {
-            "key": value,
-            "label": label,
-            "count": claims.filter(incident_type=value).count(),
-        }
+        {"key": value, "label": label, "count": band_counts[f"type_{value}"]}
         for value, label in IncidentType.choices
     ]
 
+    channel_counts = calls.aggregate(
+        **{
+            f"c_{value}": Count("id", filter=Q(channel=value))
+            for value, _ in Conversation.Channel.choices
+        }
+    )
     by_channel = [
-        {"key": value, "label": label, "count": calls.filter(channel=value).count()}
+        {"key": value, "label": label, "count": channel_counts[f"c_{value}"]}
         for value, label in Conversation.Channel.choices
     ]
 
@@ -242,8 +257,20 @@ def metrics(request):
         places[claim.location.strip()] += 1
 
     dispatches = Dispatch.objects.filter(created_at__gte=since)
+    kind_counts = dispatches.aggregate(
+        total=Count("id"),
+        open=Count(
+            "id",
+            filter=~Q(status__in=[Dispatch.Status.ARRIVED, Dispatch.Status.CANCELLED]),
+        ),
+        manual=Count("id", filter=~Q(raised_by="system")),
+        **{
+            f"k_{value}": Count("id", filter=Q(kind=value))
+            for value, _ in Dispatch.Kind.choices
+        },
+    )
     by_kind = [
-        {"key": value, "label": label, "count": dispatches.filter(kind=value).count()}
+        {"key": value, "label": label, "count": kind_counts[f"k_{value}"]}
         for value, label in Dispatch.Kind.choices
     ]
 
@@ -307,11 +334,9 @@ def metrics(request):
                 key=lambda row: -row["count"],
             ),
             "dispatch": {
-                "total": dispatches.count(),
-                "open": dispatches.exclude(
-                    status__in=[Dispatch.Status.ARRIVED, Dispatch.Status.CANCELLED]
-                ).count(),
-                "manual": dispatches.exclude(raised_by="system").count(),
+                "total": kind_counts["total"],
+                "open": kind_counts["open"],
+                "manual": kind_counts["manual"],
                 "by_kind": [row for row in by_kind if row["count"]],
             },
             "headline": {
@@ -429,3 +454,53 @@ def export_calls(request):
     stamp = timezone.now().strftime("%Y%m%d-%H%M")
     response["Content-Disposition"] = f'attachment; filename="claimvoice-calls-{stamp}.jsonl"'
     return response
+
+
+@require_GET
+def pulse(request):
+    """A cheap heartbeat every page can poll.
+
+    The alternative — every page refetching its own full feed on a timer — costs
+    tens of kilobytes and a handful of joins per tick, per open tab, forever,
+    and almost every tick returns exactly what the page already had. This
+    returns counters instead: a few COUNTs and MAXes, a few hundred bytes. A
+    page compares the ones it cares about with what it saw last time and only
+    goes back for real data when one of them moves.
+    """
+    from django.db.models import Max
+
+    from .models import ClaimNote, ClaimPhoto, Handoff, HandoffAttempt, VendorCall
+
+    def mark(model, extra=None):
+        row = model.objects.aggregate(n=Count("id"), last=Max("id"), **(extra or {}))
+        return {"n": row["n"], "last": row["last"] or 0, **{
+            k: v for k, v in row.items() if k not in ("n", "last")
+        }}
+
+    return JsonResponse(
+        {
+            "claims": mark(Claim, {"handoffs": Count("id", filter=Q(needs_human=True))}),
+            "conversations": mark(Conversation),
+            "dispatches": mark(Dispatch, {"touched": Max("updated_at")}),
+            # The queue moves without any row being added — somebody answers,
+            # somebody gives up — so the open count rides along with the ids.
+            "handoffs": {
+                **mark(
+                    Handoff,
+                    {
+                        "waiting": Count("id", filter=~Q(status__in=list(Handoff.CLOSED))),
+                        "touched": Max("ended_at"),
+                    },
+                ),
+                # Ringing the next person down the rota adds no handoff and
+                # changes no status, and it is the thing a watching board most
+                # wants to see move.
+                "tried": HandoffAttempt.objects.count(),
+            },
+            "vendor_calls": mark(VendorCall),
+            "notes": mark(ClaimNote),
+            "photos": mark(ClaimPhoto),
+            "policyholders": {"n": Policyholder.objects.count()},
+            "now": timezone.now().isoformat(),
+        }
+    )

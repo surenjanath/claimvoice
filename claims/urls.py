@@ -4,6 +4,7 @@ from . import (
     desk,
     views,
     views_dispatch,
+    views_handoff,
     views_identity,
     views_insights,
     views_share,
@@ -54,6 +55,15 @@ urlpatterns = [
     path("api/agent/", views.agent, name="agent"),
     path("api/sync-calls/", views.sync_calls, name="sync-calls"),
     path("api/demo-claim/", views.demo_claim, name="demo-claim"),
+    # The queue. The board reads and works it; Twilio reports on the leg it is
+    # holding, from the public internet, addressed by the handoff's token.
+    path("api/handoffs/", views_handoff.handoff_feed, name="handoff-feed"),
+    path("api/handoffs/<int:pk>/take/", views_handoff.take_handoff, name="handoff-take"),
+    path("api/handoffs/<int:pk>/close/", views_handoff.close_handoff, name="handoff-close"),
+    path("api/twilio/dial/<str:token>/", views_handoff.dial_status, name="handoff-dial-status"),
+    path("api/roster/", views_handoff.roster_feed, name="roster-feed"),
+    path("api/desk-log/", views_handoff.desk_log, name="desk-log"),
+    path("api/pulse/", views_insights.pulse, name="pulse"),
     path("api/metrics/", views_insights.metrics, name="metrics"),
     path("api/export/calls.jsonl", views_insights.export_calls, name="export-calls"),
     path("healthz/", views.health, name="health"),

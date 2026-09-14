@@ -213,14 +213,18 @@
   });
   window.addEventListener('hashchange', highlightHash);
 
-  fetch(CFG.policyholdersUrl)
-    .then((res) => res.json())
-    .then((data) => {
-      all = data.policyholders || [];
-      paintKpis();
-      render();
-    })
-    .catch(() => {
-      holders.innerHTML = '<p class="empty">Could not load the directory.</p>';
-    });
+  async function loadHolders() {
+    const data = await fetch(CFG.policyholdersUrl).then((res) => res.json());
+    all = data.policyholders || [];
+    paintKpis();
+    render();
+  }
+
+  loadHolders().catch(() => {
+    holders.innerHTML = '<p class="empty">Could not load the directory.</p>';
+  });
+
+  // A claim filed on another screen changes the claim count on a card here, so
+  // the book is watched alongside the people in it.
+  Live.watch(['policyholders', 'claims'], loadHolders);
 })();

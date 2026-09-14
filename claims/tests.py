@@ -2,23 +2,34 @@
 
 import json
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
+from io import StringIO
+from unittest import mock
 
+from django.core.management.base import CommandError
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 
+from . import roster
 from .models import (
     AgentProfile,
     AgentRevision,
     Claim,
+    ClaimNote,
     ClaimPhoto,
     ClaimStatus,
     Conversation,
+    DeskAction,
     Dispatch,
+    Dispatcher,
+    Handoff,
     Policyholder,
+    Shift,
     VendorCall,
     VerificationAttempt,
 )
@@ -997,6 +1008,110 @@ class InsightsMetricsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         lines = [line for line in b"".join(response.streaming_content).decode().splitlines() if line]
         self.assertEqual(len(lines), 1)
+
+
+class PageWiringTests(TestCase):
+    """Every URL a page hands its JavaScript has to resolve.
+
+    The dispatcher board keeps its routes in one `window.CLAIMVOICE` block with
+    `__ID__` and `__TOKEN__` where the row goes. Nothing checks those against
+    the URL conf, so moving a route — as the photo endpoints moved to being
+    addressed by share token — leaves a page quietly 404ing on a panel nobody
+    opens in a smoke test.
+    """
+
+    def setUp(self):
+        self.claim = Claim.objects.create(
+            policy_number="PV482193",
+            incident_type="collision",
+            location="I-95 northbound",
+            is_drivable=False,
+        )
+
+    def test_every_route_the_pages_hand_their_javascript_resolves(self):
+        from django.urls import Resolver404, resolve
+
+        for page in ("dashboard", "directory", "insights", "voice"):
+            html = self.client.get(reverse(page)).content.decode()
+            block = re.search(r"window\.CLAIMVOICE = \{(.*?)\n  \};", html, re.S)
+            self.assertIsNotNone(block, f"{page} has no CLAIMVOICE block")
+            urls = re.findall(r'(\w+): "(/[^"]*)"', block.group(1))
+            self.assertTrue(urls, f"{page} declares no routes")
+            for name, url in urls:
+                path = url.replace("__ID__", str(self.claim.id)).replace(
+                    "__TOKEN__", self.claim.share_token
+                )
+                try:
+                    resolve(path)
+                except Resolver404:
+                    self.fail(f"{page}: {name} points at {url}, which no route matches")
+
+    def test_the_board_reaches_photos_through_the_claims_share_token(self):
+        """The desk and the caller at the roadside go through one route."""
+        html = self.client.get(reverse("dashboard")).content.decode()
+        self.assertIn('photosUrl: "/api/share/__TOKEN__/photos/"', html)
+        self.assertNotIn("/api/claims/__ID__/photos/", html)
+        listing = self.client.get(f"/api/share/{self.claim.share_token}/photos/")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()["photos"], [])
+
+
+class PulseTests(TestCase):
+    """The heartbeat every open page polls in place of its own feed."""
+
+    def setUp(self):
+        self.claim = Claim.objects.create(
+            policy_number="PV482193",
+            incident_type="collision",
+            location="I-95 northbound",
+            is_drivable=False,
+        )
+
+    def test_counters_describe_what_is_stored(self):
+        body = self.client.get(reverse("pulse")).json()
+        self.assertEqual(body["claims"]["n"], 1)
+        self.assertEqual(body["claims"]["last"], self.claim.id)
+        self.assertEqual(body["claims"]["handoffs"], 0)
+        self.assertEqual(body["notes"], {"n": 0, "last": 0})
+
+    def test_a_note_moves_only_its_own_counter(self):
+        """What the board's incremental fetch rests on: a note changes a claim
+        row it already holds, and the claim counters cannot show that."""
+        before = self.client.get(reverse("pulse")).json()
+        ClaimNote.objects.create(claim=self.claim, body="Caller called back")
+        after = self.client.get(reverse("pulse")).json()
+        self.assertEqual(before["claims"], after["claims"])
+        self.assertNotEqual(before["notes"], after["notes"])
+
+    def test_a_handoff_moves_the_claim_counters(self):
+        before = self.client.get(reverse("pulse")).json()
+        self.claim.needs_human = True
+        self.claim.save(update_fields=["needs_human"])
+        after = self.client.get(reverse("pulse")).json()
+        self.assertNotEqual(before["claims"], after["claims"])
+        self.assertEqual(after["claims"]["handoffs"], 1)
+
+    def test_the_cost_does_not_grow_with_the_rows(self):
+        """It is polled by every open tab, so it has to cost the same whatever
+        is on the board. The number of aggregates is allowed to change; what it
+        must not do is depend on how much there is to count."""
+        with CaptureQueriesContext(connection) as quiet:
+            self.client.get(reverse("pulse"))
+        for index in range(20):
+            claim = Claim.objects.create(
+                policy_number=f"PV00{index}",
+                incident_type="collision",
+                location="I-95",
+                is_drivable=True,
+            )
+            ClaimNote.objects.create(claim=claim, body="note")
+        with CaptureQueriesContext(connection) as busy:
+            self.client.get(reverse("pulse"))
+        self.assertEqual(len(busy), len(quiet))
+
+    def test_the_counters_are_behind_the_desk_login(self):
+        with self.settings(DESK_AUTH=True, DESK_PASSWORD="secret"):
+            self.assertEqual(self.client.get(reverse("pulse")).status_code, 401)
 
 
 class WebhookStatusTests(TestCase):
@@ -1992,3 +2107,427 @@ class VendorCallTests(TestCase):
                     digits.startswith("1555") or digits.startswith("555"),
                     f"{kind}/{vendor['name']} is not a fiction-range number: {vendor['phone']}",
                 )
+
+
+class RosterTests(TestCase):
+    """Who is on the desk, which is the question a transfer starts with."""
+
+    def setUp(self):
+        self.day = Dispatcher.objects.create(
+            name="Priya", email="priya@example.com", phone="+15550142887", order=1
+        )
+        self.night = Dispatcher.objects.create(
+            name="Marcus", email="marcus@example.com", phone="+15550142888", order=2
+        )
+
+    def test_an_empty_rota_means_the_desk_is_always_open(self):
+        """A deployment that never wrote a rota must not silently go dark."""
+        self.assertFalse(roster.after_hours())
+        self.assertEqual(len(roster.escalation()), 2)
+
+    def test_shifts_govern_once_somebody_writes_one(self):
+        Shift.objects.create(
+            dispatcher=self.day, weekday=0, starts="09:00", ends="17:00"
+        )
+        monday_noon = self._local(2026, 9, 7, 12, 0)  # a Monday
+        monday_night = self._local(2026, 9, 7, 23, 0)
+        self.assertEqual([p.id for p in roster.escalation(monday_noon)], [self.day.id])
+        self.assertTrue(roster.after_hours(monday_night))
+
+    def test_a_night_shift_covers_the_small_hours_of_the_next_day(self):
+        """22:00 to 06:00 is a shift, not an empty set."""
+        Shift.objects.create(
+            dispatcher=self.night, weekday=4, starts="22:00", ends="06:00"
+        )
+        friday_late = self._local(2026, 9, 11, 23, 30)
+        saturday_early = self._local(2026, 9, 12, 2, 0)
+        saturday_noon = self._local(2026, 9, 12, 12, 0)
+        self.assertEqual([p.id for p in roster.escalation(friday_late)], [self.night.id])
+        self.assertEqual([p.id for p in roster.escalation(saturday_early)], [self.night.id])
+        self.assertTrue(roster.after_hours(saturday_noon))
+
+    def test_somebody_with_no_number_is_on_the_board_but_never_rung(self):
+        """A silent leg in the escalation is worse than not being in it."""
+        watcher = Dispatcher.objects.create(name="Ana", email="ana@example.com", phone="")
+        self.assertIn(watcher.id, [p.id for p in roster.rostered()])
+        self.assertNotIn(watcher.id, [p.id for p in roster.escalation()])
+
+    def test_the_escalation_skips_whoever_has_already_been_tried(self):
+        rest = roster.escalation(exclude=[self.day.id])
+        self.assertEqual([p.id for p in rest], [self.night.id])
+
+    def _local(self, *args):
+        return timezone.make_aware(datetime(*args), timezone.get_current_timezone())
+
+
+class DispatcherAccountTests(TestCase):
+    """The shared password is a demo. A desk taking real calls has people."""
+
+    def test_the_shared_password_still_works_with_nobody_on_the_desk(self):
+        with self.settings(DESK_AUTH=True, DESK_PASSWORD="secret"):
+            self.client.post("/login/", {"password": "secret"})
+            self.assertEqual(self.client.get(reverse("dashboard")).status_code, 200)
+
+    def test_creating_the_first_account_switches_the_login_over(self):
+        person = Dispatcher(name="Priya", email="priya@example.com", phone="+15550142887")
+        person.set_password("longenough")
+        person.save()
+        with self.settings(DESK_AUTH=True, DESK_PASSWORD="secret"):
+            # The shared password is no longer a way in.
+            self.client.post("/login/", {"password": "secret"})
+            self.assertEqual(self.client.get(reverse("dashboard")).status_code, 302)
+            # The account is.
+            self.client.post(
+                "/login/", {"email": "priya@example.com", "password": "longenough"}
+            )
+            self.assertEqual(self.client.get(reverse("dashboard")).status_code, 200)
+
+    def test_a_password_is_never_stored_as_typed(self):
+        person = Dispatcher(name="Priya", email="p@example.com")
+        person.set_password("longenough")
+        person.save()
+        self.assertNotIn("longenough", person.password)
+        self.assertTrue(person.check_password("longenough"))
+        self.assertFalse(person.check_password("something else"))
+
+    def test_signing_in_is_recorded_against_the_person(self):
+        person = Dispatcher(name="Priya", email="priya@example.com")
+        person.set_password("longenough")
+        person.save()
+        with self.settings(DESK_AUTH=True):
+            self.client.post(
+                "/login/", {"email": "priya@example.com", "password": "longenough"}
+            )
+        action = DeskAction.objects.filter(action="sign_in").first()
+        self.assertIsNotNone(action)
+        self.assertEqual(action.dispatcher_id, person.id)
+        self.assertEqual(action.who, "Priya")
+
+    def test_the_command_refuses_a_number_that_is_not_e164(self):
+        from django.core.management import call_command
+
+        with self.assertRaises(CommandError):
+            call_command(
+                "create_dispatcher",
+                name="Priya",
+                email="priya@example.com",
+                phone="555-0142",
+                password="longenough",
+            )
+
+    def test_the_command_writes_the_shifts_it_is_given(self):
+        from django.core.management import call_command
+
+        call_command(
+            "create_dispatcher",
+            name="Priya",
+            email="priya@example.com",
+            phone="+15550142887",
+            password="longenough",
+            shifts="mon-fri 08:00-18:00, sat 09:00-13:00",
+            stdout=StringIO(),
+        )
+        person = Dispatcher.objects.get(email="priya@example.com")
+        self.assertEqual(person.shifts.count(), 6)
+        self.assertEqual(
+            sorted(person.shifts.values_list("weekday", flat=True)), [0, 1, 2, 3, 4, 5]
+        )
+
+
+class HandoffTests(TestCase):
+    """Ivy stepping aside, and what the caller hears while she does."""
+
+    def setUp(self):
+        self.holder = Policyholder.objects.create(
+            policy_number="PV482193", full_name="Dana Whitfield", phone="+15550142887"
+        )
+        self.call = Conversation.objects.create(
+            session_id="sess_handoff",
+            channel=Conversation.Channel.PHONE,
+            caller_number="+15550190000",
+            policyholder=self.holder,
+            verified=True,
+        )
+        self.claim = Claim.objects.create(
+            policy_number="PV482193",
+            incident_type="collision",
+            location="I-95 northbound",
+            is_drivable=False,
+            conversation=self.call,
+            policyholder=self.holder,
+        )
+        self.priya = Dispatcher.objects.create(
+            name="Priya", email="priya@example.com", phone="+15550142001", order=1
+        )
+        self.marcus = Dispatcher.objects.create(
+            name="Marcus", email="marcus@example.com", phone="+15550142002", order=2
+        )
+
+    def _ask_for_a_person(self):
+        return self.client.post(
+            reverse("request-human"),
+            data=json.dumps({"session_id": "sess_handoff", "reason": "caller_request"}),
+            content_type="application/json",
+        )
+
+    # --- without live transfers ---------------------------------------------
+
+    def test_asking_for_a_person_opens_a_handoff_and_says_something_true(self):
+        """Transfers are off, so the caller must not be told to hold for one."""
+        body = self._ask_for_a_person().json()
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["transferring"])
+        self.assertIn("call you", body["message"])
+        handoff = Handoff.objects.get()
+        self.assertTrue(handoff.simulated)
+        self.assertIn("LIVE_TRANSFERS is off", handoff.note)
+        self.assertTrue(Claim.objects.get(pk=self.claim.pk).needs_human)
+
+    def test_asking_twice_is_one_person_waiting(self):
+        self._ask_for_a_person()
+        self._ask_for_a_person()
+        self.assertEqual(Handoff.objects.count(), 1)
+
+    def test_out_of_hours_is_told_to_the_caller_in_words(self):
+        Shift.objects.create(
+            dispatcher=self.priya, weekday=0, starts="09:00", ends="09:30"
+        )
+        with mock.patch("claims.roster.rostered", return_value=[]):
+            body = self._ask_for_a_person().json()
+        handoff = Handoff.objects.get()
+        self.assertEqual(handoff.status, Handoff.Status.AFTER_HOURS)
+        self.assertIn("closed", body["message"])
+        self.assertTrue(
+            self.claim.notes.filter(body__icontains="out of hours").exists()
+        )
+
+    # --- with live transfers -------------------------------------------------
+
+    def _live(self):
+        return self.settings(
+            LIVE_TRANSFERS=True,
+            OUTBOUND_FROM_NUMBER="+15550100000",
+            HANDOFF_RING_SECONDS=20,
+        )
+
+    def _twilio(self, sid="CA123"):
+        """Stand in for the carrier: one live call, and a record of redirects."""
+        sent = []
+
+        def account(path, form=None, method=None):
+            if path.startswith("/Calls.json"):
+                return {"calls": [{"sid": sid}] if sid else []}
+            sent.append((path, form))
+            return {"sid": sid}
+
+        return sent, mock.patch("claims.telephony.account", side_effect=account)
+
+    def test_a_live_call_is_taken_hold_of_and_pointed_at_the_first_dispatcher(self):
+        sent, patched = self._twilio()
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), patched:
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            body = self._ask_for_a_person().json()
+
+        self.assertTrue(body["transferring"])
+        handoff = Handoff.objects.get()
+        self.assertEqual(handoff.status, Handoff.Status.RINGING)
+        self.assertEqual(handoff.dispatcher_id, self.priya.id)
+        self.assertEqual(handoff.provider_call_id, "CA123")
+
+        path, form = sent[0]
+        self.assertEqual(path, "/Calls/CA123.json")
+        self.assertIn("<Number>+15550142001</Number>", form["Twiml"])
+        self.assertIn('timeout="20"', form["Twiml"])
+        # The callback has to be reachable from Twilio and addressed by token.
+        self.assertIn(f"/api/twilio/dial/{handoff.token}/", form["Twiml"])
+
+    def test_nobody_answering_rings_the_next_person(self):
+        """The overflow, which is the whole reason this is a queue."""
+        sent, patched = self._twilio()
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), patched:
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            self._ask_for_a_person()
+            handoff = Handoff.objects.get()
+            answer = self.client.post(
+                reverse("handoff-dial-status", args=[handoff.token]),
+                {"DialCallStatus": "no-answer"},
+            )
+
+        self.assertEqual(answer.status_code, 200)
+        handoff.refresh_from_db()
+        self.assertEqual(handoff.dispatcher_id, self.marcus.id)
+        self.assertEqual(handoff.status, Handoff.Status.RINGING)
+        self.assertIn("<Number>+15550142002</Number>", sent[-1][1]["Twiml"])
+        outcomes = list(handoff.attempts.values_list("outcome", flat=True))
+        self.assertEqual(outcomes, ["no_answer", "ringing"])
+
+    def test_somebody_answering_closes_it_and_says_so_on_the_claim(self):
+        sent, patched = self._twilio()
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), patched:
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            self._ask_for_a_person()
+            handoff = Handoff.objects.get()
+            self.client.post(
+                reverse("handoff-dial-status", args=[handoff.token]),
+                {"DialCallStatus": "completed"},
+            )
+
+        handoff.refresh_from_db()
+        self.assertEqual(handoff.status, Handoff.Status.DONE)
+        self.assertIsNotNone(handoff.connected_at)
+        self.assertTrue(self.claim.notes.filter(body__icontains="put through to Priya").exists())
+
+    def test_running_out_of_people_tells_the_caller_rather_than_holding_them(self):
+        sent, patched = self._twilio()
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), patched:
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            self._ask_for_a_person()
+            handoff = Handoff.objects.get()
+            for _ in range(3):
+                last = self.client.post(
+                    reverse("handoff-dial-status", args=[handoff.token]),
+                    {"DialCallStatus": "no-answer"},
+                )
+
+        handoff.refresh_from_db()
+        self.assertEqual(handoff.status, Handoff.Status.NO_ANSWER)
+        self.assertIn("call you back", last.content.decode())
+        self.assertIn("<Hangup/>", last.content.decode())
+
+    def test_a_caller_who_hung_up_is_not_reported_as_transferred(self):
+        sent, patched = self._twilio(sid="")
+        with self._live(), mock.patch("claims.telephony.configured", return_value=True), patched:
+            AgentProfile.objects.update_or_create(
+                defaults={"public_base_url": "https://claimvoice.example.com"}
+            )
+            self._ask_for_a_person()
+        handoff = Handoff.objects.get()
+        self.assertEqual(handoff.status, Handoff.Status.ABANDONED)
+
+    # --- the routes ----------------------------------------------------------
+
+    def test_the_carrier_callback_is_public_and_the_queue_is_not(self):
+        """Twilio has no session and cannot get one; the queue is desk-only."""
+        self._ask_for_a_person()
+        handoff = Handoff.objects.get()
+        with self.settings(DESK_AUTH=True, DESK_PASSWORD="secret"):
+            self.assertEqual(self.client.get(reverse("handoff-feed")).status_code, 401)
+            self.assertEqual(
+                self.client.post(
+                    reverse("handoff-dial-status", args=[handoff.token]),
+                    {"DialCallStatus": "completed"},
+                ).status_code,
+                200,
+            )
+
+    def test_an_unknown_token_still_answers_the_caller(self):
+        """A 500 at Twilio is a person listening to silence."""
+        answer = self.client.post(
+            reverse("handoff-dial-status", args=["nope"]), {"DialCallStatus": "completed"}
+        )
+        self.assertEqual(answer.status_code, 200)
+        self.assertIn("<Hangup/>", answer.content.decode())
+
+    def test_taking_a_call_needs_a_dispatcher_with_a_number(self):
+        self._ask_for_a_person()
+        handoff = Handoff.objects.get()
+        # Signed in with the shared password: nobody in particular.
+        self.assertEqual(
+            self.client.post(reverse("handoff-take", args=[handoff.id])).status_code, 403
+        )
+
+    def test_taking_a_call_assigns_it_and_is_recorded(self):
+        self._ask_for_a_person()
+        handoff = Handoff.objects.get()
+        self.priya.set_password("longenough")
+        self.priya.save()
+        with self.settings(DESK_AUTH=True):
+            self.client.post(
+                "/login/", {"email": "priya@example.com", "password": "longenough"}
+            )
+            body = self.client.post(reverse("handoff-take", args=[handoff.id])).json()
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["transferred"])
+        handoff.refresh_from_db()
+        self.assertEqual(handoff.dispatcher_id, self.priya.id)
+        self.assertTrue(DeskAction.objects.filter(action="take_call").exists())
+
+    def test_the_queue_feed_carries_the_cover_the_board_shows(self):
+        self._ask_for_a_person()
+        body = self.client.get(reverse("handoff-feed")).json()
+        self.assertEqual(len(body["handoffs"]), 1)
+        self.assertFalse(body["roster"]["after_hours"])
+        self.assertFalse(body["transfers"]["live"])
+        self.assertEqual(body["transfers"]["why"], "LIVE_TRANSFERS is off")
+
+
+class DuplicateClaimTests(TestCase):
+    """One incident is one claim. Two drivers is two."""
+
+    def setUp(self):
+        self.holder = Policyholder.objects.create(
+            policy_number="PV700100", full_name="Fleet Ltd", phone="+15550142887"
+        )
+
+    def _file(self, session_id, caller_number):
+        Conversation.objects.create(
+            session_id=session_id,
+            channel=Conversation.Channel.PHONE,
+            caller_number=caller_number,
+        )
+        return self.client.post(
+            reverse("log-claim"),
+            data=json.dumps(
+                {
+                    "session_id": session_id,
+                    "policy_number": "PV700100",
+                    "incident_type": "collision",
+                    "location": "I-95 northbound",
+                    "is_drivable": False,
+                }
+            ),
+            content_type="application/json",
+        ).json()
+
+    def test_the_same_caller_filing_twice_is_replayed(self):
+        first = self._file("sess_a", "+15550190001")
+        second = self._file("sess_b", "+15550190001")
+        self.assertNotIn("duplicate", first)
+        self.assertTrue(second.get("duplicate"))
+        self.assertEqual(first["claim_reference"], second["claim_reference"])
+        self.assertEqual(Claim.objects.count(), 1)
+
+    def test_two_drivers_on_one_fleet_policy_are_two_claims(self):
+        """The bug this narrowing exists for: the second driver must not be
+        read back a reference to somebody else's tow truck."""
+        first = self._file("sess_a", "+15550190001")
+        second = self._file("sess_b", "+15550190002")
+        self.assertFalse(second.get("duplicate"))
+        self.assertNotEqual(first["claim_reference"], second["claim_reference"])
+        self.assertEqual(Claim.objects.count(), 2)
+
+    def test_one_call_firing_the_tool_twice_is_still_one_claim(self):
+        self._file("sess_a", "+15550190001")
+        again = self.client.post(
+            reverse("log-claim"),
+            data=json.dumps(
+                {
+                    "session_id": "sess_a",
+                    "policy_number": "PV700100",
+                    "incident_type": "collision",
+                    "location": "I-95 northbound",
+                    "is_drivable": False,
+                }
+            ),
+            content_type="application/json",
+        ).json()
+        self.assertTrue(again.get("duplicate"))
+        self.assertEqual(Claim.objects.count(), 1)

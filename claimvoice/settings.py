@@ -196,6 +196,19 @@ OUTBOUND_FROM_NUMBER = os.environ.get("OUTBOUND_FROM_NUMBER", "") or os.environ.
 VENDOR_AGENT_ID = os.environ.get("VENDOR_AGENT_ID", "")
 DESK_PASSWORD = os.environ.get("DESK_PASSWORD", "claimvoice")
 
+# Handing a live caller to a person takes hold of the call and points it
+# somewhere else, so like placing a call it is off unless asked for. Without
+# it the handoff is still recorded and the board still lights up — the caller
+# just stays with Ivy until a dispatcher rings them back.
+LIVE_TRANSFERS = env_bool("LIVE_TRANSFERS", False)
+# Rung when the rota is empty or everybody has been tried. A supervisor's
+# mobile, usually: the point of it is to work when the rota has not.
+HANDOFF_FALLBACK_NUMBER = os.environ.get("HANDOFF_FALLBACK_NUMBER", "")
+# How long one phone rings before the caller is moved to the next person, and
+# how many people to try before giving them a call back instead.
+HANDOFF_RING_SECONDS = int(os.environ.get("HANDOFF_RING_SECONDS", "20") or 20)
+HANDOFF_MAX_ATTEMPTS = int(os.environ.get("HANDOFF_MAX_ATTEMPTS", "3") or 3)
+
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587") or 587)
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")

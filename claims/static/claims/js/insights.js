@@ -311,8 +311,11 @@
   });
 
   load(30);
-  setInterval(() => {
+  // These numbers only move when a call, a claim, a truck or a vendor call
+  // does. Watching those counters means an idle tab costs a heartbeat rather
+  // than rebuilding every chart on a fifteen-second timer.
+  Live.watch(['claims', 'conversations', 'dispatches', 'vendor_calls'], () => {
     const active = document.querySelector('#range .chip.on');
-    load(active ? active.dataset.days : 30);
-  }, 15000);
+    return load(active ? active.dataset.days : 30);
+  });
 })();

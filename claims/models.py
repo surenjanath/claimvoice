@@ -5,6 +5,13 @@ import secrets
 from django.db import models
 from django.utils import timezone
 
+from .models_desk import (  # noqa: F401  (re-exported: claims.models is the import surface)
+    DeskAction,
+    Dispatcher,
+    Handoff,
+    HandoffAttempt,
+    Shift,
+)
 from .models_policy import (  # noqa: F401  (re-exported: claims.models is the import surface)
     Conversation,
     Dispatch,
@@ -147,7 +154,9 @@ class Claim(models.Model):
             "conversation_id": self.conversation_id,
             "verified": bool(self.conversation and self.conversation.verified),
             "dispatches": [d.as_dict() for d in self.dispatches.all()],
-            "vendor_calls": [v.as_dict() for v in self.vendor_calls.all()[:20]],
+            # Sliced in Python, not in the query: .all()[:20] would go back to
+            # the database even when the rows are already prefetched.
+            "vendor_calls": [v.as_dict() for v in list(self.vendor_calls.all())[:20]],
             "lat": self.lat,
             "lng": self.lng,
             "needs_human": self.needs_human,

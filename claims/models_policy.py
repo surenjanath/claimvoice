@@ -219,7 +219,12 @@ class Conversation(models.Model):
 
     @property
     def claim(self):
-        return self.claims.first()
+        # Iterated rather than .first(): first() adds ORDER BY ... LIMIT 1 and
+        # goes to the database even when claims are already prefetched, which
+        # is once per row on a feed the dashboard polls every few seconds.
+        for claim in self.claims.all():
+            return claim
+        return None
 
     def summary_line(self):
         """What the list row says when there is no transcript to quote."""

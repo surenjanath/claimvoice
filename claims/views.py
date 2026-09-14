@@ -35,8 +35,24 @@ from .risk import score_claim
 
 log = logging.getLogger("claims")
 
-# How long the same policy and incident counts as the same claim.
+# How long the same caller, policy and incident counts as the same claim.
 DUPLICATE_WINDOW = timedelta(minutes=10)
+
+
+def _same_caller(conversation):
+    """Which earlier claims could be this same person filing again.
+
+    The call itself is the strongest answer — an agent firing the tool twice is
+    one incident whatever else is true. Failing that, the number they rang from.
+    A browser session has neither, so it falls back to the verified
+    policyholder, which is the demo's case and not a fleet's.
+    """
+    same = Q(conversation_id=conversation.id)
+    if conversation.caller_number:
+        same |= Q(conversation__caller_number=conversation.caller_number)
+    elif conversation.policyholder_id:
+        same |= Q(policyholder_id=conversation.policyholder_id)
+    return same
 
 # The agent answers this one from an enum, so "yes"/"no" arrive as strings.
 NOT_ASKED_WORDS = {"not_asked", "not asked", "unknown", "unsure", "none", ""}
@@ -353,16 +369,31 @@ def log_claim(request):
             status=200,
         )
 
+    # The call this is being filed from. Resolved before the duplicate check
+    # because who is calling is half of what makes two filings the same one.
+    conversation = _conversation(
+        payload if isinstance(payload, dict) else {},
+        request,
+        channel_default=Conversation.Channel.PHONE,
+    )
+
     # A caller who repeats themselves, or an agent that files twice for one
     # incident, must not become two tow trucks. Inside the window the same
     # policy and incident is treated as the same claim, and the original
     # reference is read back.
+    #
+    # Same *caller*, though, not just the same policy. A fleet policy is one
+    # number with a dozen drivers under it, and two of them coming off the road
+    # on the same afternoon is two incidents and two tow trucks — collapsing
+    # them leaves the second driver at the roadside holding a reference to
+    # somebody else's claim.
     recent = (
         Claim.objects.filter(
             policy_number=fields["policy_number"],
             incident_type=fields["incident_type"],
             created_at__gte=timezone.now() - DUPLICATE_WINDOW,
         )
+        .filter(_same_caller(conversation))
         # Demo fixtures are not filings. Without this, seeding the board and
         # then making a call means the caller is read back a reference from a
         # claim that was never theirs, and no claim is filed at all.
@@ -401,11 +432,6 @@ def log_claim(request):
     holder = Policyholder.objects.filter(
         policy_number=fields["policy_number"]
     ).first()
-    conversation = _conversation(
-        payload if isinstance(payload, dict) else {},
-        request,
-        channel_default=Conversation.Channel.PHONE,
-    )
     if holder and not conversation.policyholder_id:
         conversation.policyholder = holder
         conversation.save(update_fields=["policyholder"])
@@ -478,7 +504,7 @@ def claim_feed(request):
     an empty list and the page only re-renders when something arrives.
     """
     queryset = Claim.objects.select_related("policyholder", "conversation").prefetch_related(
-        "dispatches", "photos", "notes"
+        "dispatches", "photos", "notes", "vendor_calls"
     )
     stats = queryset.aggregate(
         total=Count("id"),

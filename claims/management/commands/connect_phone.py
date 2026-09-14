@@ -16,16 +16,14 @@ Needs in .env:
     TWILIO_TRUNK_DOMAIN=claimvoice.pstn.twilio.com   you choose the first part
 """
 
-import base64
-import json
 import os
 import re
 import urllib.parse
 import uuid
-from urllib import error, request
 
 from django.core.management.base import BaseCommand, CommandError
 
+from claims import telephony
 from claims.agent_api import AgentApiError, api
 from claims.models import AgentProfile
 
@@ -35,25 +33,11 @@ SIP_URL = "sip:sip.assemblyai.com"
 
 
 def twilio(url, form=None):
-    """Twilio's REST API is form-encoded with basic auth, so this needs no SDK."""
-    sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
-    token = os.environ.get("TWILIO_AUTH_TOKEN", "")
-    auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
-    data = urllib.parse.urlencode(form).encode() if form else None
-    req = request.Request(url, data=data, method="POST" if form else "GET")
-    req.add_header("Authorization", f"Basic {auth}")
-    if form:
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    """The shared client, with failures phrased for somebody at a terminal."""
     try:
-        with request.urlopen(req, timeout=30) as res:
-            body = res.read().decode()
-    except error.HTTPError as exc:
-        detail = exc.read().decode()
-        label = re.sub(r"https://[^/]+", "", url).split("?")[0]
-        raise CommandError(
-            f"Twilio {'POST' if form else 'GET'} {label} failed ({exc.code}): {detail}"
-        ) from exc
-    return json.loads(body) if body else {}
+        return telephony.call(url, form=form)
+    except telephony.TelephonyError as exc:
+        raise CommandError(str(exc)) from exc
 
 
 class Command(BaseCommand):
