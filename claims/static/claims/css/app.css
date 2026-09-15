@@ -1270,6 +1270,20 @@ a.tel:hover { color: var(--text); }
   .tabs-row input[type=search], .board-head input[type=search] {
     width: 100%; margin-left: 0;
   }
+
+  /* .quality-row.six carries two classes, so it out-specifies the plain
+     .quality-row rule at 900px above and stayed locked at 4 columns on a
+     phone no matter how narrow. Same for .two — nothing at 900px touches it
+     at all, since only the bare class was addressed there. */
+  .quality-row.six { grid-template-columns: repeat(2, 1fr); }
+  .quality-row.two { grid-template-columns: 1fr; }
+
+  .controls { flex-wrap: wrap; }
+  .controls select, .controls .btn { width: 100%; max-width: none; margin-left: 0; }
+}
+
+@media (max-width: 420px) {
+  .quality-row.six { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 400px) {

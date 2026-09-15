@@ -163,19 +163,21 @@
       Rate is of rings, not of handoffs — one caller can ring more than one person.
     </p>
     <div class="quality-row" id="dispatcher-summary"></div>
-    <table class="table notable">
-      <thead>
-        <tr>
-          <th>Dispatcher</th>
-          <th>On call now</th>
-          <th>Rung</th>
-          <th>Answered</th>
-          <th>Answer rate</th>
-          <th>Avg. time to answer</th>
-        </tr>
-      </thead>
-      <tbody id="dispatchers"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="table notable">
+        <thead>
+          <tr>
+            <th>Dispatcher</th>
+            <th>On call now</th>
+            <th>Rung</th>
+            <th>Answered</th>
+            <th>Answer rate</th>
+            <th>Avg. time to answer</th>
+          </tr>
+        </thead>
+        <tbody id="dispatchers"></tbody>
+      </table>
+    </div>
     <p class="empty" id="dispatchers-empty" hidden>Nobody has been rung in this window.</p>
   </section>
 
@@ -196,19 +198,21 @@
       Long calls, failed identity, a second filing, or a claim from someone we
       never verified. Open one on the dispatcher board.
     </p>
-    <table class="table notable">
-      <thead>
-        <tr>
-          <th>When</th>
-          <th>Caller</th>
-          <th>Channel</th>
-          <th>Length</th>
-          <th>Ended</th>
-          <th>Why it is here</th>
-        </tr>
-      </thead>
-      <tbody id="notable"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="table notable">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Caller</th>
+            <th>Channel</th>
+            <th>Length</th>
+            <th>Ended</th>
+            <th>Why it is here</th>
+          </tr>
+        </thead>
+        <tbody id="notable"></tbody>
+      </table>
+    </div>
     <p class="empty" id="notable-empty" hidden>Nothing unusual in this window.</p>
   </section>
 </div>
