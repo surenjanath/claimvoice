@@ -649,13 +649,14 @@ def request_human(request):
         claim.save(update_fields=["needs_human", "handoff_reason"])
 
     # The flag lights the board. This puts the caller through.
-    from .handoff import AFTER_HOURS_LINE, HOLD_LINE, open_handoff
+    from .handoff import AFTER_HOURS_LINE, HOLD_LINE, NO_ANSWER_LINE, open_handoff
     from .models import Handoff
 
     handoff = open_handoff(conversation, reason=reason, claim=claim)
     spoken = {
         Handoff.Status.RINGING: HOLD_LINE,
         Handoff.Status.AFTER_HOURS: AFTER_HOURS_LINE,
+        Handoff.Status.NO_ANSWER: NO_ANSWER_LINE,
     }.get(
         handoff.status,
         "A dispatcher has your claim and will call you straight back.",

@@ -28,6 +28,7 @@ PUBLIC_EXACT = {
     "/login/",
     "/logout/",
     "/healthz/",
+    "/api/tick/",
     "/api/token/",
     "/api/agent/",
     "/api/verify/",

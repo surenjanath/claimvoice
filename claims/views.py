@@ -657,6 +657,62 @@ def health(request):
     )
 
 
+@csrf_exempt
+def tick(request):
+    """One pass of everything that otherwise needs a worker dyno.
+
+    `watch_dispatches` and `watch_handoffs` are one-pass-per-run by design —
+    their own docstrings say a cron entry is enough — but a free-plan
+    deployment has no cron and no worker, only the web process. This gives an
+    external pinger something to call instead, the same way the README already
+    has one keep the free web service itself awake by pinging /healthz/.
+
+    Gated by the same shared secret as the tool webhooks rather than a login,
+    because nothing hitting this has a session — it is a scheduler, not a
+    dispatcher at a keyboard. Each pass is independent and best-effort: a
+    hiccup in one (a flaky vendor call, AssemblyAI's API) must not stop the
+    others from running.
+    """
+    if request.method not in ("GET", "POST"):
+        return HttpResponseNotAllowed(["GET", "POST"])
+    secret = settings.CLAIM_WEBHOOK_SECRET
+    if secret and request.headers.get("X-Claim-Secret") != secret:
+        return JsonResponse({"ok": False, "error": "forbidden"}, status=403)
+
+    from . import handoff as handoffs
+    from .sync import sync_sessions
+    from .vendor_calls import chase, overdue_calls
+
+    result = {"ok": True}
+
+    try:
+        late = overdue_calls()
+        for dispatch, minutes in late:
+            chase(dispatch, minutes)
+        result["dispatches_chased"] = len(late)
+    except Exception:
+        log.exception("tick: watch_dispatches pass failed")
+        result["dispatches_chased"] = None
+
+    try:
+        stale = handoffs.stale_ringing()
+        for stuck in stale:
+            handoffs.reap_stale(stuck)
+        result["handoffs_closed"] = len(stale)
+    except Exception:
+        log.exception("tick: watch_handoffs pass failed")
+        result["handoffs_closed"] = None
+
+    try:
+        synced = sync_sessions(limit=25)
+        result["sessions_synced"] = synced["sessions"]
+    except Exception:
+        log.exception("tick: sync_calls pass failed")
+        result["sessions_synced"] = None
+
+    return JsonResponse(result)
+
+
 # --- settings --------------------------------------------------------------
 
 _FIELD_PANES = {

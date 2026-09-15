@@ -67,5 +67,6 @@ urlpatterns = [
     path("api/metrics/", views_insights.metrics, name="metrics"),
     path("api/export/calls.jsonl", views_insights.export_calls, name="export-calls"),
     path("healthz/", views.health, name="health"),
+    path("api/tick/", views.tick, name="tick"),
     path("c/<str:token>/", views_share.claim_share, name="claim-share"),
 ]

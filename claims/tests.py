@@ -2480,7 +2480,7 @@ class HandoffTests(TestCase):
             self.assertEqual(
                 handoff_lib.transfer_ready(), (False, "no Twilio credentials")
             )
-        with self.settings(LIVE_TRANSFERS=True), mock.patch(
+        with self.settings(LIVE_TRANSFERS=True, PUBLIC_BASE_URL=""), mock.patch(
             "claims.telephony.configured", return_value=True
         ):
             AgentProfile.objects.update_or_create(defaults={"public_base_url": ""})
@@ -2938,3 +2938,78 @@ class DuplicateClaimTests(TestCase):
         ).json()
         self.assertTrue(again.get("duplicate"))
         self.assertEqual(Claim.objects.count(), 1)
+
+
+class TickTests(TestCase):
+    """The free-plan substitute for a worker dyno: one HTTP call runs a pass
+    of everything that otherwise needs a scheduler of its own."""
+
+    def test_get_and_post_are_both_allowed(self):
+        self.assertEqual(self.client.get(reverse("tick")).status_code, 200)
+        self.assertEqual(self.client.post(reverse("tick")).status_code, 200)
+
+    def test_other_methods_are_rejected(self):
+        self.assertEqual(self.client.delete(reverse("tick")).status_code, 405)
+
+    def test_secret_is_enforced_when_configured(self):
+        with self.settings(CLAIM_WEBHOOK_SECRET="s3cret"):
+            self.assertEqual(self.client.get(reverse("tick")).status_code, 403)
+            ok = self.client.get(reverse("tick"), headers={"x-claim-secret": "s3cret"})
+            self.assertEqual(ok.status_code, 200)
+
+    def test_nothing_due_is_a_quiet_pass(self):
+        body = self.client.get(reverse("tick")).json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["dispatches_chased"], 0)
+        self.assertEqual(body["handoffs_closed"], 0)
+
+    def test_a_late_tow_is_chased_in_one_pass(self):
+        from claims.vendor_calls import place_call, record_outcome
+
+        holder = Policyholder.objects.create(
+            policy_number="PV482193", full_name="Dana Whitfield", phone="+15550142887"
+        )
+        claim = Claim.objects.create(
+            policy_number="PV482193",
+            incident_type="collision",
+            location="I-95 northbound near exit 12",
+            is_drivable=False,
+            tow_required=True,
+            policyholder=holder,
+            lat=39.95,
+            lng=-75.16,
+        )
+        call = place_call(claim)
+        record_outcome(call, accepted=True, eta_minutes=25)
+        Dispatch.objects.filter(claim=claim).update(
+            updated_at=timezone.now() - timedelta(minutes=45)
+        )
+
+        body = self.client.get(reverse("tick")).json()
+        self.assertEqual(body["dispatches_chased"], 1)
+        self.assertTrue(
+            claim.vendor_calls.filter(purpose=VendorCall.Purpose.ETA_CHECK).exists()
+        )
+
+    def test_a_handoff_stuck_ringing_is_closed_in_one_pass(self):
+        conversation = Conversation.objects.create(session_id="sess-tick")
+        handoff = Handoff.objects.create(
+            conversation=conversation, status=Handoff.Status.RINGING
+        )
+        Handoff.objects.filter(pk=handoff.pk).update(
+            created_at=timezone.now() - timedelta(seconds=200)
+        )
+
+        body = self.client.get(reverse("tick")).json()
+        self.assertEqual(body["handoffs_closed"], 1)
+        handoff.refresh_from_db()
+        self.assertEqual(handoff.status, Handoff.Status.NO_ANSWER)
+
+    def test_a_bad_sync_pass_does_not_block_the_others(self):
+        with mock.patch(
+            "claims.sync.sync_sessions", side_effect=RuntimeError("assemblyai is down")
+        ):
+            body = self.client.get(reverse("tick")).json()
+        self.assertTrue(body["ok"])
+        self.assertIsNone(body["sessions_synced"])
+        self.assertEqual(body["dispatches_chased"], 0)

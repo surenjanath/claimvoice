@@ -531,3 +531,29 @@ minutes from an external scheduler. The health check is cheap and touches only
 the database.
 
 Anyone with the URL can start sessions billed to your API key.
+
+### Keeping the background loops running for free
+
+`watch_dispatches` and `watch_handoffs` are the two things that catch a
+problem nobody is watching for — a late tow, a transfer whose outcome never
+came back — and both are one pass per run by design, meant for a cron entry.
+A free Render plan has no worker dyno and no cron, only the web process, so
+without something calling them they simply never run once deployed.
+
+`POST /api/tick/` (also answers `GET`, for pingers that only do that) runs one
+pass of both, plus a light `sync_calls`, and is gated by the same
+`X-Claim-Secret` header as the tool webhooks — set `CLAIM_WEBHOOK_SECRET` and
+it is closed to anyone who does not have it. Point the same kind of external
+scheduler used for `/healthz/` at it, every few minutes:
+
+```sh
+curl -X POST https://your-app.example.com/api/tick/ \
+     -H "X-Claim-Secret: $CLAIM_WEBHOOK_SECRET"
+```
+
+Each of the three passes is independent and best-effort — a flaky vendor call
+or a hiccup in AssemblyAI's API fails that one field in the JSON response
+(`dispatches_chased`, `handoffs_closed`, `sessions_synced` — `null` instead of
+a count) without stopping the others. On a paid plan a real worker running
+`watch_dispatches --loop 60` and `watch_handoffs --loop 30` is the cleaner
+architecture; this is the free-plan equivalent.
