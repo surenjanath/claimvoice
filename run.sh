@@ -44,11 +44,17 @@ curl -fsS --max-time 3 "http://localhost:$PORT/healthz/" >/dev/null || {
 # and AssemblyAI refuses a webhook host it cannot resolve. Wait for the app to
 # answer through the tunnel; if it never does, throw that tunnel away and take
 # another one.
+#
+# --protocol http2: cloudflared tries QUIC (UDP) first by default, and on a
+# network that restricts outbound UDP but allows plain HTTPS — many
+# corporate networks and sandboxes — that attempt hangs until it times out
+# rather than failing fast, so the "next" tunnel never gets a chance. HTTP/2
+# over the TCP connection that already works skips that hang.
 url=""
 for try in 1 2; do
   echo "Opening a public tunnel…"
   : >"$log"
-  cloudflared tunnel --url "http://localhost:$PORT" >"$log" 2>&1 &
+  cloudflared tunnel --protocol http2 --url "http://localhost:$PORT" >"$log" 2>&1 &
   tunnel_pid=$!
 
   candidate=""

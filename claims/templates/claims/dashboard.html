@@ -59,21 +59,23 @@
       <span class="count" id="row-count"></span>
     </div>
 
-    <table class="table">
-      <thead>
-        <tr>
-          <th style="width:96px">Claim</th>
-          <th style="width:128px">Policy</th>
-          <th style="width:104px">Incident</th>
-          <th>Location</th>
-          <th style="width:170px">Risk</th>
-          <th style="width:172px">Vehicle</th>
-          <th style="width:190px">Status</th>
-          <th style="width:82px">Time</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:96px">Claim</th>
+            <th style="width:128px">Policy</th>
+            <th style="width:104px">Incident</th>
+            <th>Location</th>
+            <th style="width:170px">Risk</th>
+            <th style="width:172px">Vehicle</th>
+            <th style="width:190px">Status</th>
+            <th style="width:82px">Time</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
 
     <div class="board-empty" id="board-empty">
       <p>No claims yet. <a href="{% url 'voice' %}">Talk to Ivy</a> and one lands here mid-sentence.</p>
@@ -91,21 +93,23 @@
       <span class="count" id="conv-count"></span>
     </div>
 
-    <table class="table">
-      <thead>
-        <tr>
-          <th style="width:96px">Call</th>
-          <th style="width:180px">Caller</th>
-          <th style="width:96px">Channel</th>
-          <th>What was said</th>
-          <th style="width:110px">Turns</th>
-          <th style="width:110px">Claim</th>
-          <th style="width:92px">Length</th>
-          <th style="width:82px">Time</th>
-        </tr>
-      </thead>
-      <tbody id="conv-rows"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:96px">Call</th>
+            <th style="width:180px">Caller</th>
+            <th style="width:96px">Channel</th>
+            <th>What was said</th>
+            <th style="width:110px">Turns</th>
+            <th style="width:110px">Claim</th>
+            <th style="width:92px">Length</th>
+            <th style="width:82px">Time</th>
+          </tr>
+        </thead>
+        <tbody id="conv-rows"></tbody>
+      </table>
+    </div>
 
     <div class="board-empty" id="conv-empty">
       <p>No calls recorded yet. Every call is transcribed here for tuning the prompt.</p>
@@ -125,21 +129,23 @@
       <span class="count" id="dispatch-count"></span>
     </div>
 
-    <table class="table">
-      <thead>
-        <tr>
-          <th style="width:110px">Kind</th>
-          <th style="width:96px">Claim</th>
-          <th style="width:160px">Who</th>
-          <th>Location</th>
-          <th style="width:160px">Vendor</th>
-          <th style="width:72px">ETA</th>
-          <th style="width:220px">Status</th>
-          <th style="width:82px">When</th>
-        </tr>
-      </thead>
-      <tbody id="dispatch-rows"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:110px">Kind</th>
+            <th style="width:96px">Claim</th>
+            <th style="width:160px">Who</th>
+            <th>Location</th>
+            <th style="width:160px">Vendor</th>
+            <th style="width:72px">ETA</th>
+            <th style="width:220px">Status</th>
+            <th style="width:82px">When</th>
+          </tr>
+        </thead>
+        <tbody id="dispatch-rows"></tbody>
+      </table>
+    </div>
 
     <div class="board-empty" id="dispatch-empty">
       <p>Nothing on the road. A tow lands here the moment Ivy files an undrivable claim.</p>
@@ -154,20 +160,22 @@
       <span class="count" id="queue-count"></span>
     </div>
 
-    <table class="table">
-      <thead>
-        <tr>
-          <th style="width:96px">Claim</th>
-          <th style="width:170px">Caller</th>
-          <th style="width:150px">Number</th>
-          <th>Why</th>
-          <th style="width:186px">Tried</th>
-          <th style="width:74px">Waited</th>
-          <th style="width:250px">Status</th>
-        </tr>
-      </thead>
-      <tbody id="queue-rows"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:96px">Claim</th>
+            <th style="width:170px">Caller</th>
+            <th style="width:150px">Number</th>
+            <th>Why</th>
+            <th style="width:186px">Tried</th>
+            <th style="width:74px">Waited</th>
+            <th style="width:250px">Status</th>
+          </tr>
+        </thead>
+        <tbody id="queue-rows"></tbody>
+      </table>
+    </div>
 
     <div class="board-empty" id="queue-empty">
       <p>Nobody is waiting for a person. A caller asking for one lands here mid-call.</p>

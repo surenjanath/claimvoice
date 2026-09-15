@@ -858,6 +858,17 @@ DEMO_SCRIPTS = (
         "description": "A tree came down on the Leaf. Passenger has a cut.",
         "caller_name": "Priya Raghunathan",
     },
+    {
+        "policy_number": "PV300400",
+        "incident_type": "theft",
+        "location": "Westfield garage, level 3",
+        "is_drivable": True,
+        "injuries_reported": False,
+        "vehicle": "black Subaru Outback",
+        "severity": "glass_or_dents",
+        "description": "Parked overnight, gone by morning. Garage has no cameras on that level.",
+        "caller_name": "Marcus Feld",
+    },
 )
 
 
