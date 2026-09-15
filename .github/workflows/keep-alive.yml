@@ -1,0 +1,45 @@
+name: Keep Render awake
+
+# Render's free plan sleeps a web service after ~15 minutes idle and takes
+# ~50s to wake — survivable in a browser, but it breaks a phone call: the
+# tool webhook times out while the caller hears nothing. Pinging /healthz/
+# resets Render's idle timer before that ever happens.
+#
+# /api/tick/ runs watch_dispatches and watch_handoffs, the two loops that
+# chase a late tow and close out a stuck transfer. They're one-pass-per-run
+# by design (meant for cron), and the free plan has no worker dyno to run
+# them — this is that cron. It's secret-gated the same way the tool webhooks
+# are; set the CLAIM_WEBHOOK_SECRET repo secret (Render dashboard > your
+# service > Environment) to actually run those loops instead of just
+# getting a 403. Without it, this still keeps the app awake — the ping
+# itself is what resets the idle timer, regardless of the response.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /healthz/
+        run: |
+          curl -fsS --max-time 20 "https://claimvoice.onrender.com/healthz/" \
+            && echo "healthz ok" || echo "::warning::healthz ping failed"
+
+      - name: Run /api/tick/
+        env:
+          CLAIM_WEBHOOK_SECRET: ${{ secrets.CLAIM_WEBHOOK_SECRET }}
+        run: |
+          if [ -n "$CLAIM_WEBHOOK_SECRET" ]; then
+            curl -fsS --max-time 20 -X POST \
+              -H "X-Claim-Secret: $CLAIM_WEBHOOK_SECRET" \
+              "https://claimvoice.onrender.com/api/tick/" \
+              && echo "tick ok" || echo "::warning::tick ping failed"
+          else
+            curl -fsS --max-time 20 -X POST \
+              "https://claimvoice.onrender.com/api/tick/" \
+              && echo "tick ok (no secret set — dispatch/handoff loops did not run, only pinged)" \
+              || echo "::warning::tick ping failed (expected 403 with no CLAIM_WEBHOOK_SECRET repo secret set)"
+          fi
