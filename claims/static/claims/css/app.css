@@ -1254,6 +1254,79 @@ a.tel:hover { color: var(--text); }
 .table-scroll .table { min-width: 760px; }
 
 @media (max-width: 640px) {
+  /* A horizontal-scroll table is a worse fix than it sounds: every cell
+     still wraps to its full multi-line height first (location, summary, the
+     status column's stacked buttons), so what you get is both a sideways
+     swipe *and* rows several lines tall. Hiding the columns that are
+     available one tap away, in the row's own detail drawer, gets a table
+     that actually fits — no scroll, no ballooning row height. */
+  .table-scroll .table { min-width: 0; }
+
+  #view-claims .table th:nth-child(2), #view-claims .table td:nth-child(2),
+  #view-claims .table th:nth-child(6), #view-claims .table td:nth-child(6),
+  #view-claims .table th:nth-child(8), #view-claims .table td:nth-child(8) { display: none; }
+
+  #view-conversations .table th:nth-child(3), #view-conversations .table td:nth-child(3),
+  #view-conversations .table th:nth-child(5), #view-conversations .table td:nth-child(5),
+  #view-conversations .table th:nth-child(7), #view-conversations .table td:nth-child(7),
+  #view-conversations .table th:nth-child(8), #view-conversations .table td:nth-child(8) { display: none; }
+
+  #view-dispatches .table th:nth-child(3), #view-dispatches .table td:nth-child(3),
+  #view-dispatches .table th:nth-child(4), #view-dispatches .table td:nth-child(4),
+  #view-dispatches .table th:nth-child(5), #view-dispatches .table td:nth-child(5),
+  #view-dispatches .table th:nth-child(8), #view-dispatches .table td:nth-child(8) { display: none; }
+
+  #view-queue .table th:nth-child(3), #view-queue .table td:nth-child(3),
+  #view-queue .table th:nth-child(4), #view-queue .table td:nth-child(4),
+  #view-queue .table th:nth-child(5), #view-queue .table td:nth-child(5) { display: none; }
+
+  .insights .notable.dispatchers th:nth-child(3), .insights .notable.dispatchers td:nth-child(3),
+  .insights .notable.dispatchers th:nth-child(4), .insights .notable.dispatchers td:nth-child(4),
+  .insights .notable.dispatchers th:nth-child(6), .insights .notable.dispatchers td:nth-child(6) { display: none; }
+
+  .insights .notable.calls th:nth-child(3), .insights .notable.calls td:nth-child(3),
+  .insights .notable.calls th:nth-child(4), .insights .notable.calls td:nth-child(4),
+  .insights .notable.calls th:nth-child(5), .insights .notable.calls td:nth-child(5) { display: none; }
+
+  .table td, .table th { padding: 11px 8px; }
+  .table th[style*="width"] { width: auto !important; }
+
+  /* auto table-layout sizes columns off each cell's own content, and
+     Location's content (the address, then caller/vehicle, then the
+     dispatch line) loses that contest to short cells like Claim and Risk —
+     it was left too narrow to hold its own longest word, so words were
+     breaking mid-letter. table-layout: fixed with widths chosen for what's
+     still visible after the hides above gives Location the room its
+     content actually needs, deterministically, instead of whatever auto
+     negotiates. */
+  #view-claims .table { table-layout: fixed; }
+  #view-claims .table th:nth-child(1), #view-claims .table td:nth-child(1) { width: 13%; }
+  #view-claims .table th:nth-child(3), #view-claims .table td:nth-child(3) { width: 15%; }
+  #view-claims .table th:nth-child(4), #view-claims .table td:nth-child(4) { width: 36%; }
+  #view-claims .table th:nth-child(5), #view-claims .table td:nth-child(5) { width: 11%; }
+  #view-claims .table th:nth-child(7), #view-claims .table td:nth-child(7) { width: 25%; }
+
+  /* Status's segmented-control buttons are the widest thing in the row now
+     that they wrap — "DISPATCHED" alone needs more than a stat number's
+     worth of column, which is what nth-child(7) above gives it. A smaller
+     font on top means the column can stay honest to the other cells'
+     proportions instead of eating even more of the row. */
+  #view-claims .state button { font-size: 9px; padding: 0 6px; }
+
+  /* The status segmented control (New/Dispatched/Closed) is three buttons
+     forced onto one un-wrapping row with a joined-pill border radius — at
+     full column width on desktop that fits, but past the columns just
+     hidden above it does not, and a clipped button is one nobody can tap.
+     Letting them wrap breaks the joined look, which is the trade worth
+     making over an unreachable control. */
+  .state { flex-wrap: wrap; gap: 4px; }
+  .state button { border-radius: 6px !important; margin-left: 0 !important; }
+
+  .table .where, .table .who-line { word-break: break-word; }
+  /* Claims-table only: conversations' "What was said" column reuses .desc
+     for its actual content, which must stay. */
+  #view-claims .table .desc { display: none; }
+
   .topbar { flex-wrap: wrap; height: auto; min-height: 56px; padding: 10px 16px; row-gap: 8px; }
   .nav {
     margin-left: 0; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
