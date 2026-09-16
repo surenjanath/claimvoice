@@ -8,6 +8,7 @@ export type Scene = {
   narration: string;
   seconds: number;
   url?: string; // shown in the browser-chrome address bar when PLATFORM === "web"
+  code?: string[]; // an "insight" scene: no screenshot, a code/bisection block instead
 };
 
 export const FPS = 30;
@@ -48,9 +49,24 @@ export const scenes: Scene[] = [
     eyebrow: "TALK TO IVY",
     title: "One call, start to finish",
     narration:
-      "Ivy runs on AssemblyAI's voice agent platform. She verifies who's calling first, then walks through what happened, where, and whether the car still drives — one question at a time.",
-    seconds: 12,
+      "Ivy runs on AssemblyAI's voice agent platform. Before she says anything about a policy, she verifies who's calling — and a wrong answer gets the exact same response whether that policy is real or not. Drivability only ever comes from what the caller says out loud, never inferred from how they describe the damage.",
+    seconds: 20,
     url: "claimvoice.app",
+  },
+  {
+    id: "insight-schema",
+    image: null,
+    eyebrow: "THE ONE API GOTCHA THAT BIT",
+    title: "A field the model can't compose kills the tool",
+    narration:
+      "Bisected against the live API, one property at a time. Four required fields, it fires. Add a copied field, still fires. Ask it to compose one sentence in its own words, and the tool call never fires again — no error, Ivy just says she's filing it, forever.",
+    seconds: 17,
+    code: [
+      "four required fields only              → tool.call fires",
+      "+ caller_name (copied from the caller)  → tool.call fires",
+      "+ severity (an enum it picks from)      → tool.call fires",
+      "+ description (\"in your own words\")     → NEVER FIRES",
+    ],
   },
   {
     id: "dashboard",

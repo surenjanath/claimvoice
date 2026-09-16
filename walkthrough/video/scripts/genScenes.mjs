@@ -24,7 +24,9 @@ const sceneEntries = script.scenes
     title: "${esc(s.title)}",
     narration:
       "${esc(s.narration)}",
-    seconds: ${s.seconds},${s.url ? `\n    url: "${esc(s.url)}",` : ""}
+    seconds: ${s.seconds},${s.url ? `\n    url: "${esc(s.url)}",` : ""}${
+      s.code ? `\n    code: [${s.code.map((line) => `\n      "${esc(line)}",`).join("")}\n    ],` : ""
+    }
   },`
   )
   .join("\n");
@@ -39,6 +41,7 @@ export type Scene = {
   narration: string;
   seconds: number;
   url?: string; // shown in the browser-chrome address bar when PLATFORM === "web"
+  code?: string[]; // an "insight" scene: no screenshot, a code/bisection block instead
 };
 
 export const FPS = 30;

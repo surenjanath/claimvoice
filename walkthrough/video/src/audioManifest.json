@@ -1,6 +1,7 @@
 {
   "intro": true,
   "voice": true,
+  "insight-schema": true,
   "dashboard": true,
   "conversations": true,
   "dispatches": true,

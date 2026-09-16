@@ -1,7 +1,7 @@
 import React from "react";
 import { Sequence, AbsoluteFill } from "remotion";
 import { scenes, FPS, Scene, BRAND, PLATFORM } from "./scenes";
-import { TitleCard, ScreenShowcase, WebScreenShowcase } from "./Scene";
+import { TitleCard, InsightCard, ScreenShowcase, WebScreenShowcase } from "./Scene";
 
 export const Walkthrough: React.FC<{ scenes: Scene[] }> = ({
   scenes: sceneList,
@@ -24,6 +24,8 @@ export const Walkthrough: React.FC<{ scenes: Scene[] }> = ({
         <Sequence key={scene.id} from={start} durationInFrames={duration}>
           {scene.id === "intro" || scene.id === "outro" ? (
             <TitleCard scene={scene} durationInFrames={duration} />
+          ) : scene.code ? (
+            <InsightCard scene={scene} durationInFrames={duration} />
           ) : (
             <Showcase scene={scene} durationInFrames={duration} index={index} />
           )}

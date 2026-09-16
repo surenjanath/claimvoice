@@ -161,6 +161,123 @@ export const TitleCard: React.FC<{
   );
 };
 
+// A scene with no screenshot but real technical substance — a schema
+// bisection, a race condition, a guardrail — rendered as a console block
+// instead of a browser-chrome mockup. Distinct from TitleCard (which is a
+// bare title/eyebrow divider): this one carries a body paragraph and a
+// code block, so it reads as an engineering finding, not a section break.
+export const InsightCard: React.FC<{
+  scene: SceneType;
+  durationInFrames: number;
+}> = ({ scene, durationInFrames }) => {
+  const opacity = useFade(durationInFrames);
+  const audioAvailable = hasAudio(scene.id);
+
+  return (
+    <AbsoluteFill
+      style={{
+        backgroundColor: BRAND.bg,
+        opacity,
+        justifyContent: "center",
+        alignItems: "center",
+      }}
+    >
+      {audioAvailable ? <Audio src={staticFile(`audio/${scene.id}.mp3`)} /> : null}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage: `linear-gradient(${BRAND.textSecondary}22 1px, transparent 1px), linear-gradient(90deg, ${BRAND.textSecondary}22 1px, transparent 1px)`,
+          backgroundSize: "64px 64px",
+          opacity: 0.35,
+        }}
+      />
+      <div
+        style={{
+          position: "relative",
+          width: 1400,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <div
+          style={{
+            fontFamily: MANROPE,
+            fontWeight: 700,
+            fontSize: 22,
+            letterSpacing: 3,
+            color: BRAND.gold,
+            textTransform: "uppercase",
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+          }}
+        >
+          <span style={{ width: 36, height: 2, background: BRAND.gold, display: "inline-block" }} />
+          {scene.eyebrow}
+        </div>
+        <div
+          style={{
+            marginTop: 22,
+            fontFamily: OUTFIT,
+            fontWeight: 500,
+            fontSize: 52,
+            lineHeight: 1.1,
+            color: BRAND.textPrimary,
+            maxWidth: 1200,
+          }}
+        >
+          {scene.title}
+        </div>
+        <div
+          style={{
+            marginTop: 24,
+            fontFamily: MANROPE,
+            fontWeight: 400,
+            fontSize: 24,
+            lineHeight: 1.55,
+            color: BRAND.textSecondary,
+            maxWidth: 1080,
+          }}
+        >
+          {scene.narration}
+        </div>
+        {scene.code ? (
+          <div
+            style={{
+              marginTop: 40,
+              backgroundColor: "#000000",
+              border: `1px solid ${BRAND.textSecondary}33`,
+              borderRadius: 16,
+              padding: "32px 36px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+            }}
+          >
+            {scene.code.map((line, i) => {
+              const isFail = /NEVER FIRES/.test(line);
+              return (
+                <div
+                  key={i}
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 22,
+                    color: isFail ? "#ff6b5e" : "#bfe8ff",
+                    whiteSpace: "pre",
+                  }}
+                >
+                  {line}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 export const ScreenShowcase: React.FC<{
   scene: SceneType;
   durationInFrames: number;

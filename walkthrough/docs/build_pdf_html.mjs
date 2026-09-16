@@ -17,6 +17,16 @@ const PLATFORM = script.platform === "web" ? "web" : "mobile";
 // Any scene id left out just falls back to scene.narration as the body with
 // no bullet list — so this can start as {} and be filled in per app.
 const DETAILS = {
+  "insight-schema": {
+    kicker: "THE ONE API GOTCHA THAT BIT",
+    body:
+      "Every tool property here is something the model copies or picks — never composes. Found by bisecting the live tool schema field by field: add a property the model has to write in its own words, and the tool stops firing entirely. No error, no exception — the model just says “let me get that filed for you” and nothing happens.",
+    bullets: [
+      "description was cut from the schema; severity became an enum it picks from instead",
+      "The readable summary line the dashboard shows is assembled server-side, from the facts the agent did send",
+      "A test fails the build if a free-text field ever creeps back into the tool schema",
+    ],
+  },
   voice: {
     kicker: "TALK TO IVY",
     body:
@@ -111,23 +121,33 @@ const fmtDate = new Date().toLocaleDateString("en-US", {
   day: "numeric",
 });
 
-// Scenes with image: null are title/divider cards meant for the video's
-// pacing (a beat between real screens), not a documentable screen — the
-// per-scene template has nothing to put in the media slot for them, so they
-// rendered as an empty placeholder box. The PDF already has its own cover
-// and closing pages carrying that same intro/outro narrative, so those
-// scenes are redundant here; only image-bearing scenes get a section page.
-const documentedScenes = script.scenes.filter((scene) => scene.image);
+// Scenes with image: null AND no code are pure title/divider cards meant
+// for the video's pacing (a beat between real screens), not a documentable
+// screen — the per-scene template has nothing to put in the media slot for
+// them, so they rendered as an empty placeholder box. The PDF already has
+// its own cover and closing pages carrying that same intro/outro
+// narrative, so those two are redundant here. A scene.code entry (an
+// insight — no screenshot, but real technical content) still gets a page,
+// rendered as a console block instead of a screenshot frame.
+const documentedScenes = script.scenes.filter((scene) => scene.image || scene.code);
 
 const sectionsHtml = documentedScenes
   .map((scene, i) => {
     const d = DETAILS[scene.id] || {};
-    const imgPath = join(SCREENS, scene.image);
     const num = String(i + 1).padStart(2, "0");
-    const media =
-      PLATFORM === "web"
-        ? `<div class="browser-frame"><div class="browser-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>${scene.url ? `<span class="browser-url">${scene.url}</span>` : ""}</div><img src="file://${imgPath}" /></div>`
-        : `<div class="phone-frame"><img src="file://${imgPath}" /></div>`;
+    let media;
+    if (scene.code) {
+      const lines = scene.code
+        .map((line) => `<div class="line${/NEVER FIRES/.test(line) ? " fail" : ""}">${line}</div>`)
+        .join("");
+      media = `<div class="code-frame">${lines}</div>`;
+    } else {
+      const imgPath = join(SCREENS, scene.image);
+      media =
+        PLATFORM === "web"
+          ? `<div class="browser-frame"><div class="browser-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>${scene.url ? `<span class="browser-url">${scene.url}</span>` : ""}</div><img src="file://${imgPath}" /></div>`
+          : `<div class="phone-frame"><img src="file://${imgPath}" /></div>`;
+    }
     return `
   <div class="page section-page">
     <section class="scene ${PLATFORM === "web" ? "web" : i % 2 === 1 ? "reverse" : ""}">
@@ -290,6 +310,16 @@ const html = `<!doctype html>
   .browser-frame.placeholder { height: 90mm; }
   .browser-bar { display: flex; align-items: center; gap: 3mm; padding: 2.6mm 4mm; background: #EDEEF2; }
   .browser-bar .dot { width: 2.6mm; height: 2.6mm; border-radius: 50%; display: inline-block; }
+
+  /* An "insight" scene (scene.code, no screenshot) — a bisection or a
+     before/after, same dark console treatment as the video's InsightCard. */
+  .code-frame {
+    width: 100%; border-radius: 4mm; background: #000000;
+    border: 1px solid rgba(139,139,149,0.2); padding: 8mm 9mm;
+    display: flex; flex-direction: column; gap: 3mm;
+  }
+  .code-frame .line { font-family: 'Courier New', monospace; font-size: 11.5px; color: #bfe8ff; white-space: pre; }
+  .code-frame .line.fail { color: #ff6b5e; }
   .browser-bar .dot.r { background: #FF5F57; }
   .browser-bar .dot.y { background: #FEBC2E; }
   .browser-bar .dot.g { background: #28C840; }
