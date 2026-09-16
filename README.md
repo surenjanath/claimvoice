@@ -8,6 +8,49 @@ then files the First Notice of Loss while they are still on the line. The claim
 is scored, a tow is dispatched, and the row lands on the dispatcher board as she
 reads the reference number back.
 
+<p align="center">
+  <img src="walkthrough/assets/cover.png" alt="ClaimVoice — the call is the claim" width="720">
+</p>
+
+**Watch it before reading the rest of this:**
+
+- **Live** — [claimvoice.onrender.com](https://claimvoice.onrender.com) (press
+  **Start**, or skip the microphone entirely — see
+  [below](#talk-to-it-without-a-microphone))
+- **60s explainer** — [claimvoice-explainer.mp4](https://github.com/surenjanath/claimvoice/releases/download/media-v1/claimvoice-explainer.mp4)
+- **2m walkthrough**, narrated screen by screen — [walkthrough.mp4](https://github.com/surenjanath/claimvoice/releases/download/media-v1/walkthrough.mp4)
+  · [PDF guide](https://github.com/surenjanath/claimvoice/releases/download/media-v1/walkthrough.pdf)
+- **Hackathon submission** — [lablab.ai](https://lablab.ai/ai-hackathons/assemblyai-voice-agent-hackathon/claimvoice/claimvoice-ai-claims-first-responder)
+
+Neither video is tracked in git (see `.gitignore`) — both are attached to the
+[`media-v1` release](https://github.com/surenjanath/claimvoice/releases/tag/media-v1)
+instead, and are reproducible from `video/` and `walkthrough/` respectively.
+
+<details>
+<summary>Every screen, at a glance</summary>
+<br>
+
+<table>
+<tr>
+<td width="50%"><img src="walkthrough/screenshots/01_voice.png" width="100%"><br><b>Talk to Ivy</b> — one call, start to finish</td>
+<td width="50%"><img src="walkthrough/screenshots/02_dashboard.png" width="100%"><br><b>Dispatcher board</b> — scored and triaged as it's filed</td>
+</tr>
+<tr>
+<td><img src="walkthrough/screenshots/03_conversations.png" width="100%"><br><b>Every call, kept</b> — the recording, not just the summary</td>
+<td><img src="walkthrough/screenshots/04_dispatches.png" width="100%"><br><b>Getting a truck moving</b> — the call after the call</td>
+</tr>
+<tr>
+<td><img src="walkthrough/screenshots/05_insights.png" width="100%"><br><b>Insights</b> — where Ivy needs to get better</td>
+<td><img src="walkthrough/screenshots/06_directory.png" width="100%"><br><b>Directory</b> — the book Ivy verifies against</td>
+</tr>
+<tr>
+<td><img src="walkthrough/screenshots/07_share.png" width="100%"><br><b>What the driver sees</b> — a link, texted, that stays live</td>
+<td><img src="walkthrough/screenshots/08_settings.png" width="100%"><br><b>Agent configuration</b> — Ivy's whole personality, one prompt</td>
+</tr>
+</table>
+
+</details>
+
 One Django app serves all three pieces:
 
 | | |
