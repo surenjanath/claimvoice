@@ -26,9 +26,7 @@ Neither video is tracked in git (see `.gitignore`) — both are attached to the
 [`media-v1` release](https://github.com/surenjanath/claimvoice/releases/tag/media-v1)
 instead, and are reproducible from `video/` and `walkthrough/` respectively.
 
-<details>
-<summary>Every screen, at a glance</summary>
-<br>
+**Every screen, at a glance:**
 
 <table>
 <tr>
@@ -48,8 +46,6 @@ instead, and are reproducible from `video/` and `walkthrough/` respectively.
 <td><img src="walkthrough/screenshots/08_settings.png" width="100%"><br><b>Agent configuration</b> — Ivy's whole personality, one prompt</td>
 </tr>
 </table>
-
-</details>
 
 One Django app serves all three pieces:
 
