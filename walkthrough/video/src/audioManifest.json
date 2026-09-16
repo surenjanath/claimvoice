@@ -1,0 +1,12 @@
+{
+  "intro": true,
+  "voice": true,
+  "dashboard": true,
+  "conversations": true,
+  "dispatches": true,
+  "insights": true,
+  "directory": true,
+  "share": true,
+  "settings": true,
+  "outro": true
+}

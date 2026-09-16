@@ -9,3 +9,7 @@ media/
 .superpowers/
 video/node_modules/
 video/out/
+walkthrough/video/node_modules/
+walkthrough/video/out/
+walkthrough/docs/walkthrough.html
+walkthrough/docs/walkthrough.pdf
