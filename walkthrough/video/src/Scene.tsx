@@ -19,25 +19,12 @@ function useFade(durationInFrames: number) {
   );
 }
 
-// The app's real wordmark (frontend/assets/full_new_logo.png) is dark-green
-// text on transparent, so it needs a light card behind it to read on our
-// dark-green scenes.
+// The app's real wordmark is light text on transparent (it's drawn for the
+// app's dark topbar), so it reads directly on these scenes' dark/brand
+// backgrounds — no card behind it needed.
 const LogoBadge: React.FC<{ width?: number; padding?: number }> = ({
   width = 220,
-  padding = 18,
-}) => (
-  <div
-    style={{
-      backgroundColor: "#FFFFFF",
-      borderRadius: 999,
-      padding: `${padding * 0.55}px ${padding}px`,
-      boxShadow: "0 10px 24px -8px rgba(0,0,0,0.35)",
-      display: "inline-flex",
-    }}
-  >
-    <Img src={staticFile("logo.png")} style={{ width, display: "block" }} />
-  </div>
-);
+}) => <Img src={staticFile("logo.png")} style={{ width, display: "block" }} />;
 
 // Generic browser-window chrome (traffic-light dots + a URL pill) around a
 // screenshot, for "web" platform scenes. `object-fit: contain` inside so it
