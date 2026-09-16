@@ -9,12 +9,21 @@ const FADE_FRAMES = 15;
 // The only motion in these scenes: a crossfade at the start/end of each
 // scene's Sequence, so cuts aren't jarring. No entrance springs, no
 // pan/zoom, no sliding text — deliberately static otherwise.
-function useFade(durationInFrames: number) {
+//
+// fadeIn/fadeOut default to true but are turned off for the very first and
+// last scene in the whole video: frame 0 of the rendered file is what social
+// platforms grab as the paused-autoplay thumbnail, and a crossfade-from-black
+// there means the "thumbnail" is a black rectangle. Cuts between scenes still
+// crossfade; only the outer edges of the whole video hold at full opacity.
+function useFade(
+  durationInFrames: number,
+  { fadeIn = true, fadeOut = true }: { fadeIn?: boolean; fadeOut?: boolean } = {}
+) {
   const frame = useCurrentFrame();
   return interpolate(
     frame,
     [0, FADE_FRAMES, durationInFrames - FADE_FRAMES, durationInFrames],
-    [0, 1, 1, 0],
+    [fadeIn ? 0 : 1, 1, 1, fadeOut ? 0 : 1],
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
   );
 }
@@ -99,8 +108,10 @@ const hasAudio = (id: string) => {
 export const TitleCard: React.FC<{
   scene: SceneType;
   durationInFrames: number;
-}> = ({ scene, durationInFrames }) => {
-  const opacity = useFade(durationInFrames);
+  fadeIn?: boolean;
+  fadeOut?: boolean;
+}> = ({ scene, durationInFrames, fadeIn, fadeOut }) => {
+  const opacity = useFade(durationInFrames, { fadeIn, fadeOut });
   const audioAvailable = hasAudio(scene.id);
 
   return (
@@ -139,6 +150,9 @@ export const TitleCard: React.FC<{
             letterSpacing: 3,
             textTransform: "uppercase",
             textAlign: "center",
+            backgroundColor: "rgba(0,0,0,0.4)",
+            padding: "8px 20px",
+            borderRadius: 999,
           }}
         >
           {scene.eyebrow}
@@ -156,8 +170,10 @@ export const TitleCard: React.FC<{
 export const InsightCard: React.FC<{
   scene: SceneType;
   durationInFrames: number;
-}> = ({ scene, durationInFrames }) => {
-  const opacity = useFade(durationInFrames);
+  fadeIn?: boolean;
+  fadeOut?: boolean;
+}> = ({ scene, durationInFrames, fadeIn, fadeOut }) => {
+  const opacity = useFade(durationInFrames, { fadeIn, fadeOut });
   const audioAvailable = hasAudio(scene.id);
 
   return (
@@ -269,8 +285,10 @@ export const ScreenShowcase: React.FC<{
   scene: SceneType;
   durationInFrames: number;
   index: number;
-}> = ({ scene, durationInFrames }) => {
-  const opacity = useFade(durationInFrames);
+  fadeIn?: boolean;
+  fadeOut?: boolean;
+}> = ({ scene, durationInFrames, fadeIn, fadeOut }) => {
+  const opacity = useFade(durationInFrames, { fadeIn, fadeOut });
   const audioAvailable = hasAudio(scene.id);
 
   return (
@@ -302,6 +320,9 @@ export const ScreenShowcase: React.FC<{
             letterSpacing: 3,
             color: BRAND.gold,
             textTransform: "uppercase",
+            backgroundColor: "rgba(0,0,0,0.4)",
+            padding: "6px 16px",
+            borderRadius: 999,
           }}
         >
           {scene.eyebrow}
@@ -375,8 +396,10 @@ export const WebScreenShowcase: React.FC<{
   scene: SceneType;
   durationInFrames: number;
   index: number;
-}> = ({ scene, durationInFrames }) => {
-  const opacity = useFade(durationInFrames);
+  fadeIn?: boolean;
+  fadeOut?: boolean;
+}> = ({ scene, durationInFrames, fadeIn, fadeOut }) => {
+  const opacity = useFade(durationInFrames, { fadeIn, fadeOut });
   const audioAvailable = hasAudio(scene.id);
   const SIDE_PANEL_WIDTH = 620;
 
@@ -400,12 +423,16 @@ export const WebScreenShowcase: React.FC<{
         <div
           style={{
             marginTop: 32,
+            alignSelf: "flex-start",
             fontFamily: MANROPE,
             fontWeight: 700,
             fontSize: 17,
             letterSpacing: 3,
             color: BRAND.gold,
             textTransform: "uppercase",
+            backgroundColor: "rgba(0,0,0,0.4)",
+            padding: "6px 16px",
+            borderRadius: 999,
           }}
         >
           {scene.eyebrow}

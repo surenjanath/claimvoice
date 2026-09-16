@@ -20,17 +20,37 @@ export const Walkthrough: React.FC<{ scenes: Scene[] }> = ({
 
   return (
     <AbsoluteFill style={{ backgroundColor: BRAND.bg }}>
-      {items.map(({ scene, start, duration, index }) => (
-        <Sequence key={scene.id} from={start} durationInFrames={duration}>
-          {scene.id === "intro" || scene.id === "outro" ? (
-            <TitleCard scene={scene} durationInFrames={duration} />
-          ) : scene.code ? (
-            <InsightCard scene={scene} durationInFrames={duration} />
-          ) : (
-            <Showcase scene={scene} durationInFrames={duration} index={index} />
-          )}
-        </Sequence>
-      ))}
+      {items.map(({ scene, start, duration, index }) => {
+        const fadeIn = index !== 0;
+        const fadeOut = index !== items.length - 1;
+        return (
+          <Sequence key={scene.id} from={start} durationInFrames={duration}>
+            {scene.id === "intro" || scene.id === "outro" ? (
+              <TitleCard
+                scene={scene}
+                durationInFrames={duration}
+                fadeIn={fadeIn}
+                fadeOut={fadeOut}
+              />
+            ) : scene.code ? (
+              <InsightCard
+                scene={scene}
+                durationInFrames={duration}
+                fadeIn={fadeIn}
+                fadeOut={fadeOut}
+              />
+            ) : (
+              <Showcase
+                scene={scene}
+                durationInFrames={duration}
+                index={index}
+                fadeIn={fadeIn}
+                fadeOut={fadeOut}
+              />
+            )}
+          </Sequence>
+        );
+      })}
     </AbsoluteFill>
   );
 };
