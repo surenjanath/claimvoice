@@ -17,6 +17,10 @@ reads the reference number back.
 - **Live** — [claimvoice.onrender.com](https://claimvoice.onrender.com) (press
   **Start**, or skip the microphone entirely — see
   [below](#talk-to-it-without-a-microphone))
+- **Call Ivy** — **+1 447 235 0697** from any phone. Verify as policy
+  **PV482193**, last four **2887** (Dana Whitfield), then report an accident.
+  The claim lands on the [dispatcher board](https://claimvoice.onrender.com/dashboard/)
+  while you are still on the line.
 - **60s explainer** — [claimvoice-explainer.mp4](https://github.com/surenjanath/claimvoice/releases/download/media-v1/claimvoice-explainer.mp4)
 - **2m walkthrough**, narrated screen by screen — [walkthrough.mp4](https://github.com/surenjanath/claimvoice/releases/download/media-v1/walkthrough.mp4)
   · [PDF guide](https://github.com/surenjanath/claimvoice/releases/download/media-v1/walkthrough.pdf)

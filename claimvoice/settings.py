@@ -195,6 +195,9 @@ OUTBOUND_FROM_NUMBER = os.environ.get("OUTBOUND_FROM_NUMBER", "") or os.environ.
 # The agent that speaks to vendors. Published by `publish_agent --vendor`.
 VENDOR_AGENT_ID = os.environ.get("VENDOR_AGENT_ID", "")
 DESK_PASSWORD = os.environ.get("DESK_PASSWORD", "claimvoice")
+# The number Ivy answers, shown on the Talk-to-Ivy page so testers can ring it.
+# Set DEMO_PHONE_NUMBER= (empty) to hide it once the number is switched off.
+DEMO_PHONE_NUMBER = os.environ.get("DEMO_PHONE_NUMBER", "+1 447 235 0697")
 # A "demo login" button on /login/. Unset: shown only while the desk runs on the
 # shared password. DEMO_LOGIN=1 keeps it even with accounts; 0 hides it.
 DEMO_LOGIN = env_bool("DEMO_LOGIN", False) if "DEMO_LOGIN" in os.environ else None

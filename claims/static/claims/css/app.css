@@ -266,6 +266,9 @@ body.live .ring.two { animation-delay: .6s; }
 }
 .demo-chip:hover .copy-hint { color: var(--accent); }
 .demo-who { color: var(--faint) !important; font-size: 12.5px !important; }
+.demo-phone { font-size: 13px !important; color: var(--muted); }
+.demo-phone b { font-family: var(--mono); letter-spacing: .04em; color: var(--text); }
+.rail-demo .demo-phone { margin-top: 8px; }
 .recap { margin-top: 12px; text-align: left; }
 .recap-actions { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
 .recap .player { margin-top: 14px; }

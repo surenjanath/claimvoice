@@ -266,6 +266,10 @@ def voice(request):
             # page says so rather than letting someone talk into a dead end.
             "tool_live": bool(profile.webhook_url),
             "voice_label": profile.get_voice_id_display(),
+            "demo_phone": settings.DEMO_PHONE_NUMBER,
+            "demo_phone_tel": "".join(
+                c for c in settings.DEMO_PHONE_NUMBER if c.isdigit() or c == "+"
+            ),
         },
     )
 

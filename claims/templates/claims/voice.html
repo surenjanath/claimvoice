@@ -55,6 +55,9 @@
               <span class="copy-hint">Copy</span>
             </button>
           </div>
+          {% if demo_phone %}
+          <p class="demo-phone">Or ring Ivy from any phone: <a href="tel:{{ demo_phone_tel }}"><b>{{ demo_phone }}</b></a></p>
+          {% endif %}
           <p class="demo-who" id="demo-who">
             You are <b>Dana Whitfield</b>, silver 2019 Toyota Camry.
             More testers on the <a href="{% url 'directory' %}">directory</a>.
@@ -115,6 +118,9 @@
           </button>
         </div>
         <p class="demo-who" id="rail-demo-who">You are <b>Dana Whitfield</b>, silver 2019 Toyota Camry.</p>
+        {% if demo_phone %}
+        <p class="demo-phone">Call Ivy: <a href="tel:{{ demo_phone_tel }}"><b>{{ demo_phone }}</b></a></p>
+        {% endif %}
       </div>
       {% endif %}
 

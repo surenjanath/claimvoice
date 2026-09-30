@@ -113,5 +113,6 @@ Sentry · Render (free-tier blueprint deploy).
 ## Links
 
 - Repo: https://github.com/surenjanath/claimvoice
-- Demo: press **Start call** on `/`, or run `node tools/simulate_call.mjs`
+- Demo: call **+1 447 235 0697** from any phone (policy PV482193, last four
+  2887), press **Start call** on `/`, or run `node tools/simulate_call.mjs`
   for a no-microphone walkthrough that talks to a real running server.
