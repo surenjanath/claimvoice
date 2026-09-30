@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from io import StringIO
 from unittest import mock
 
+from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import connection
 from django.test import TestCase
@@ -3034,3 +3035,32 @@ class DemoLoginTests(TestCase):
             self.assertNotContains(self.client.get("/login/"), "Demo login")
             self.client.post("/login/", {"demo": "1"})
             self.assertFalse(self.client.session.get("desk"))
+
+
+
+class MisheardPolicyTests(TestCase):
+    def setUp(self):
+        call_command("seed_policies", verbosity=0)
+
+    def test_a_misheard_prefix_still_finds_the_policy(self):
+        from .models_policy import find_policyholder
+
+        for heard in ["TV482193", "PB482193", "pv-482193", "PV 482 193"]:
+            self.assertEqual(find_policyholder(heard).policy_number, "PV482193", heard)
+        self.assertIsNone(find_policyholder("TV4821"))
+
+    def test_verify_passes_on_a_misheard_prefix_with_the_right_last_four(self):
+        with self.settings(CLAIM_WEBHOOK_SECRET=""):
+            body = self.client.post(
+                reverse("verify"),
+                data=json.dumps({"policy_number": "TV482193", "phone_last4": "2887"}),
+                content_type="application/json",
+            ).json()
+            self.assertTrue(body["verified"])
+            self.assertEqual(body["policy_number"], "PV482193")
+            wrong = self.client.post(
+                reverse("verify"),
+                data=json.dumps({"policy_number": "TV482193", "phone_last4": "0000"}),
+                content_type="application/json",
+            ).json()
+            self.assertFalse(wrong["verified"])

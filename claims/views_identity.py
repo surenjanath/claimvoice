@@ -23,6 +23,7 @@ from django.core.files.base import ContentFile
 from .agent_api import AgentApiError, api
 from .redact import blank_spans, redact_tool_calls, redact_turns
 from .models import Conversation, Policyholder, VerificationAttempt
+from .models_policy import find_policyholder
 
 log = logging.getLogger("claims")
 
@@ -143,7 +144,7 @@ def verify_policyholder(request):
             }
         )
 
-    holder = Policyholder.objects.filter(policy_number=policy_number).first()
+    holder = find_policyholder(policy_number)
     passed = bool(holder and holder.phone_last4 and holder.phone_last4 == last4)
 
     VerificationAttempt.objects.create(
@@ -196,6 +197,7 @@ def verify_policyholder(request):
     return JsonResponse(
         {
             "verified": True,
+            "policy_number": holder.policy_number,
             "policy_status": holder.status,
             "first_name": holder.first_name,
             "full_name": holder.full_name,
@@ -206,7 +208,9 @@ def verify_policyholder(request):
             "vehicles": vehicles,
             "message": f"Thank you {holder.first_name}, I have your policy here.",
             "instructions": (
-                f"Verified. Greet them by first name ({holder.first_name}). The policy covers "
+                f"Verified. The policy number is {holder.policy_number}; use exactly that "
+                "in log_claim, not what you heard. "
+                f"Greet them by first name ({holder.first_name}). The policy covers "
                 f"{vehicles or 'their vehicle'} with {holder.get_coverage_display().lower()} "
                 f"cover and a {holder.deductible} dollar deductible. Use these details to ask "
                 "targeted questions — name the car rather than asking what they drive. "

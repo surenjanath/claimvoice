@@ -10,6 +10,31 @@ from django.urls import reverse
 from django.utils import timezone
 
 
+def find_policyholder(spoken):
+    """The policy a caller meant, allowing for how it was heard.
+
+    Speech recognition swaps the letters freely over a phone line: "PV" comes
+    back as "TV", "PB" or "BV". The digits are what the caller is sure of, so
+    when the exact number is not on the books, six or more digits that belong
+    to exactly one policy are taken as that policy. This only finds the
+    record; the last four digits still have to match before anyone is told
+    anything about it.
+    """
+    import re
+
+    text = re.sub(r"[^A-Z0-9]", "", str(spoken or "").upper())
+    if not text:
+        return None
+    holder = Policyholder.objects.filter(policy_number__iexact=text).first()
+    if holder:
+        return holder
+    number = re.sub(r"\D", "", text)
+    if len(number) < 6:
+        return None
+    matches = list(Policyholder.objects.filter(policy_number__endswith=number)[:2])
+    return matches[0] if len(matches) == 1 else None
+
+
 class Policyholder(models.Model):
     """A customer on the books. The agent verifies against this before it says
     anything about a policy."""

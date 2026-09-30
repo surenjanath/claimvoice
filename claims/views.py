@@ -18,6 +18,7 @@ from .agent_api import AgentApiError, api, mint_token, publish_agent, redacted_a
 from .forms import AgentProfileForm
 from .prompt_presets import PRESETS
 from .webhook_status import probe_webhook
+from .models_policy import find_policyholder
 from .models import (
     AgentProfile,
     Claim,
@@ -169,6 +170,10 @@ def parse_claim(payload):
     policy = str(data.get("policy_number") or "").strip().upper().replace(" ", "")
     if not policy:
         raise PayloadError("policy_number is required", "policy_number")
+    # File it under the number on the books, not a mishearing of it.
+    known = find_policyholder(policy)
+    if known:
+        policy = known.policy_number
 
     location = str(data.get("location") or "").strip()
     if not location:
