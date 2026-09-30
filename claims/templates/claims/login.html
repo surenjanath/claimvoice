@@ -32,6 +32,17 @@
       <button type="submit" class="btn">Log in</button>
     {% endif %}
   </form>
+  {% if demo_login %}
+    <div class="demo-login">
+      <span class="demo-login-or mono">or</span>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next }}">
+        <input type="hidden" name="demo" value="1">
+        <button type="submit" class="btn demo-login-btn">Demo login — open the desk</button>
+      </form>
+    </div>
+  {% endif %}
   {% if by_account %}
     <p class="hint">Ask a supervisor, or run <code>python manage.py create_dispatcher</code>.</p>
   {% else %}

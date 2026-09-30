@@ -976,6 +976,20 @@
         if ($('demo-last4')) $('demo-last4').textContent = holder.phone_last4 || '';
         if (policyBtn) policyBtn.dataset.copy = holder.policy_number;
         if (lastBtn) lastBtn.dataset.copy = holder.phone_last4 || '';
+        const railPolicy = $('rail-demo-policy');
+        const railLast = $('rail-demo-last4');
+        if (railPolicy) {
+          railPolicy.textContent = holder.policy_number;
+          railPolicy.closest('[data-copy]').dataset.copy = holder.policy_number;
+        }
+        if (railLast) {
+          railLast.textContent = holder.phone_last4 || '';
+          railLast.closest('[data-copy]').dataset.copy = holder.phone_last4 || '';
+        }
+        const railWho = $('rail-demo-who');
+        if (railWho) {
+          railWho.innerHTML = `You are <b>${escapeHtml(holder.full_name)}</b>${holder.vehicle_line ? `, ${escapeHtml(holder.vehicle_line)}` : ''}.`;
+        }
         const who = $('demo-who');
         if (who) {
           who.innerHTML =

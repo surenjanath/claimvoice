@@ -99,6 +99,25 @@
       </div>
       {% endif %}
 
+      {% if has_key and agent_id %}
+      <div class="rail-demo card" id="rail-demo">
+        <p class="rail-kicker mono">Demo caller · read these out to Ivy</p>
+        <div class="demo-creds">
+          <button type="button" class="demo-chip" data-copy="PV482193">
+            <span class="k mono">Policy</span>
+            <b id="rail-demo-policy">PV482193</b>
+            <span class="copy-hint">Copy</span>
+          </button>
+          <button type="button" class="demo-chip" data-copy="2887">
+            <span class="k mono">Last four</span>
+            <b id="rail-demo-last4">2887</b>
+            <span class="copy-hint">Copy</span>
+          </button>
+        </div>
+        <p class="demo-who" id="rail-demo-who">You are <b>Dana Whitfield</b>, silver 2019 Toyota Camry.</p>
+      </div>
+      {% endif %}
+
       <p class="rail-kicker mono">Intake</p>
       <ol class="intake" id="intake">
         <li data-step="verify">Verify the caller</li>
@@ -171,5 +190,5 @@
   };
 </script>
 <script src="{% static 'claims/js/recorder.js' %}"></script>
-<script src="{% static 'claims/js/voice.js' %}?v=more"></script>
+<script src="{% static 'claims/js/voice.js' %}?v=rail-demo"></script>
 {% endblock %}

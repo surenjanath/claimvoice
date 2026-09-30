@@ -3013,3 +3013,24 @@ class TickTests(TestCase):
         self.assertTrue(body["ok"])
         self.assertIsNone(body["sessions_synced"])
         self.assertEqual(body["dispatches_chased"], 0)
+
+
+class DemoLoginTests(TestCase):
+    def test_demo_button_opens_the_shared_desk(self):
+        with self.settings(DESK_AUTH=True, DESK_PASSWORD="s"):
+            page = self.client.get("/login/")
+            self.assertContains(page, "Demo login")
+            response = self.client.post("/login/", {"demo": "1", "next": "/dashboard/"})
+            self.assertRedirects(response, "/dashboard/", fetch_redirect_response=False)
+            self.assertTrue(self.client.session["desk"])
+
+    def test_demo_button_is_shut_once_accounts_exist(self):
+        from .models import Dispatcher
+
+        person = Dispatcher(name="P", email="p@example.com")
+        person.set_password("longenough")
+        person.save()
+        with self.settings(DESK_AUTH=True):
+            self.assertNotContains(self.client.get("/login/"), "Demo login")
+            self.client.post("/login/", {"demo": "1"})
+            self.assertFalse(self.client.session.get("desk"))

@@ -122,7 +122,13 @@ def login(request):
         return redirect(nxt)
 
     by_account = accounts_exist()
+    demo_login = demo_login_allowed(by_account)
     if request.method == "POST":
+        if request.POST.get("demo") and demo_login:
+            request.session["desk"] = True
+            request.session["desk_dispatcher"] = None
+            request.session["desk_name"] = "Demo dispatcher"
+            return redirect(nxt)
         if by_account:
             person = _authenticate(
                 request.POST.get("email") or "", request.POST.get("password") or ""
@@ -140,7 +146,24 @@ def login(request):
                 request.session["desk_name"] = name or "Dispatcher"
                 return redirect(nxt)
             messages.error(request, "That password is not right.")
-    return render(request, "claims/login.html", {"next": nxt, "by_account": by_account})
+    return render(
+        request,
+        "claims/login.html",
+        {"next": nxt, "by_account": by_account, "demo_login": demo_login},
+    )
+
+
+def demo_login_allowed(by_account):
+    """One click onto the desk for judges and testers.
+
+    While the desk runs on the shared word, which the login page already
+    prints, this gives nothing away. Once real accounts exist it stays shut
+    unless DEMO_LOGIN is switched on for the deployment.
+    """
+    setting = getattr(settings, "DEMO_LOGIN", None)
+    if setting is None:
+        return not by_account
+    return bool(setting)
 
 
 def _authenticate(email, password):

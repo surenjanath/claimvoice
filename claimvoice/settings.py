@@ -195,6 +195,9 @@ OUTBOUND_FROM_NUMBER = os.environ.get("OUTBOUND_FROM_NUMBER", "") or os.environ.
 # The agent that speaks to vendors. Published by `publish_agent --vendor`.
 VENDOR_AGENT_ID = os.environ.get("VENDOR_AGENT_ID", "")
 DESK_PASSWORD = os.environ.get("DESK_PASSWORD", "claimvoice")
+# A "demo login" button on /login/. Unset: shown only while the desk runs on the
+# shared password. DEMO_LOGIN=1 keeps it even with accounts; 0 hides it.
+DEMO_LOGIN = env_bool("DEMO_LOGIN", False) if "DEMO_LOGIN" in os.environ else None
 
 # Handing a live caller to a person takes hold of the call and points it
 # somewhere else, so like placing a call it is off unless asked for. Without
